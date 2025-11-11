@@ -1,9 +1,11 @@
+<center>
+
 # Lightning Grasp
-[![CC BY-NC 4.0 License](https://licensebuttons.net/l/by-nc/4.0/88x31.png)](https://creativecommons.org/licenses/by-nc/4.0/)
+Public repository for the Lightning Grasp system.
 
-Public repository for the Lightning Grasp system. 
+**Thousands of dexterous grasps in seconds.** 
+</center>
 
-**Thousands of dexterous grasps in seconds.**
 ![](misc/teaser.png)
 ## Install
 Follow these steps to set up the environment and dependencies.
@@ -103,6 +105,9 @@ pip install networkx==3.2.1
 For other problems, leave an issue or email me ``zhaohengyin@cs.berkeley.edu`` (I can be quite busy, but I’ll do my best to respond as soon as I can).
 ## License
 CC-By-NC 4.0. 
+
+[![CC BY-NC 4.0 License](https://licensebuttons.net/l/by-nc/4.0/88x31.png)](https://creativecommons.org/licenses/by-nc/4.0/)
+
 
 This software and its generated data are licensed for academic and research use only. The license does not grant rights for commercial application, including but not limited to:
 
