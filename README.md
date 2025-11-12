@@ -7,8 +7,13 @@ Public repository for the Lightning Grasp system. [paper](https://arxiv.org/abs/
 </center>
 
 ![](misc/teaser.png)
+## System Requirements
+- Operating System: Ubuntu 22.04 or 24.04
+- GPU: NVIDIA GPU with Pascal, Volta/Turing, Ampere, or Ada Lovelace architecture
+
 ## Install
 Follow these steps to set up the environment and dependencies.
+
 
 ### Step 1. Python Environment
 Choose one of the following setup methods.
