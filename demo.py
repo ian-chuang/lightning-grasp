@@ -50,7 +50,7 @@ def get_args():
     parser.add_argument('--cf_accel', type=str, default='lbvhs2', help='Contact Field Acceleration Structure')
     parser.add_argument('--object_pose_sampling_strategy', type=str, default='canonical', help='Object pose sampling strategy')
     parser.add_argument('--visualize', action='store_true', help='Enable visualization')
-    parser.add_argument('--object_mesh_path', type=str, default="./assets/object/ycb/013_apple/textured.obj", help='Path to the object mesh')
+    parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
 
     args = parser.parse_args()
     return args
