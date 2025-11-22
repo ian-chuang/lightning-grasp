@@ -1,6 +1,7 @@
 import torch
 import numpy as np
-from scipy.spatial.transform import Rotation, Slerp
+import math_utils
+import math
 
 def sample_random_q(robot, batch_size=1):
     """
@@ -12,12 +13,13 @@ def sample_random_q(robot, batch_size=1):
     
     # Filter for active joints
     active_joint_ids = [tree.get_joint_id(name) for name in robot.get_active_joints()]
-    active_lowers = lowers[active_joint_ids]
-    active_uppers = uppers[active_joint_ids]
+    active_lowers = torch.tensor(lowers[active_joint_ids], dtype=torch.float32)
+    active_uppers = torch.tensor(uppers[active_joint_ids], dtype=torch.float32)
     
     # Sample
-    q_rand = np.random.uniform(active_lowers, active_uppers, size=(batch_size, len(active_joint_ids)))
-    return torch.from_numpy(q_rand).float()
+    rand = torch.rand((batch_size, len(active_joint_ids)))
+    q_rand = active_lowers + rand * (active_uppers - active_lowers)
+    return q_rand
 
 def sample_random_object_pose(robot, batch_size=1):
     """
@@ -25,84 +27,96 @@ def sample_random_object_pose(robot, batch_size=1):
     Position in canonical space.
     """
     bmin, bmax = robot.get_canonical_space()
+    bmin_t = torch.tensor(bmin, dtype=torch.float32)
+    bmax_t = torch.tensor(bmax, dtype=torch.float32)
     
-    # Position
-    pos = np.random.uniform(bmin, bmax, size=(batch_size, 3))
+    poses = []
+    for _ in range(batch_size):
+        # Rotation
+        R = math_utils.generate_random_rotation()
+        
+        # Translation
+        pos = bmin_t + torch.rand(3) * (bmax_t - bmin_t)
+        
+        T = torch.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = pos
+        poses.append(T)
     
-    # Orientation (Random Quaternion)
-    rot = Rotation.random(batch_size)
-    
-    poses = np.eye(4)[None, ...].repeat(batch_size, axis=0)
-    poses[:, :3, 3] = pos
-    poses[:, :3, :3] = rot.as_matrix()
-    
-    return torch.from_numpy(poses).float()
+    return torch.stack(poses)
 
-def interpolate_state(q_start, p_start, q_end, p_end, t):
+def interpolate_state(q_start, p_start, q_end, p_end, num_steps=10):
     """
     Interpolate between two states.
-    t: float [0, 1]
+    Returns path of states.
     """
-    # q: Linear
-    q_interp = q_start + t * (q_end - q_start)
-    
-    # p: Position Linear
-    pos_start = p_start[:, :3, 3]
-    pos_end = p_end[:, :3, 3]
-    pos_interp = pos_start + t * (pos_end - pos_start)
-    
-    # p: Rotation SLERP
-    # Convert to numpy for scipy
-    if isinstance(p_start, torch.Tensor):
-        p_start_np = p_start.detach().cpu().numpy()
+    # p interpolation
+    # p_start, p_end are (1, 4, 4) or (4, 4)
+    if p_start.ndim == 3:
+        p1 = p_start[0]
     else:
-        p_start_np = p_start
+        p1 = p_start
         
-    if isinstance(p_end, torch.Tensor):
-        p_end_np = p_end.detach().cpu().numpy()
+    if p_end.ndim == 3:
+        p2 = p_end[0]
     else:
-        p_end_np = p_end
-
-    rot_interp_mats = []
-    for i in range(len(p_start)):
-        r_start = Rotation.from_matrix(p_start_np[i, :3, :3])
-        r_end = Rotation.from_matrix(p_end_np[i, :3, :3])
+        p2 = p_end
         
-        key_rots = Rotation.concatenate([r_start, r_end])
-        slerp = Slerp([0, 1], key_rots)
-        r_i = slerp([t])
-        rot_interp_mats.append(r_i.as_matrix()[0])
+    p_path, n = math_utils.interpolate_poses(p1, p2, num_steps=num_steps)
+    
+    # q interpolation
+    if q_start.ndim == 2:
+        q1 = q_start[0]
+    else:
+        q1 = q_start
         
-    rot_interp_mats = np.array(rot_interp_mats)
+    if q_end.ndim == 2:
+        q2 = q_end[0]
+    else:
+        q2 = q_end
+        
+    t = torch.linspace(0, 1, steps=n+2, device=q_start.device)
+    q_path = q1 + (q2 - q1) * t.unsqueeze(1)
     
-    p_interp = p_start.clone()
-    p_interp[:, :3, 3] = pos_interp
-    p_interp[:, :3, :3] = torch.from_numpy(rot_interp_mats).float().to(p_start.device)
-    
-    return q_interp, p_interp
+    return q_path, p_path
 
 def find_nearest_neighbor(q_rand, p_rand, dataset_q, dataset_p):
     """
     Find nearest neighbor in dataset.
-    Simple Euclidean distance on q and p (position).
-    TODO: Add rotation distance.
     """
     # q distance
     # q_rand: [1, n_dof]
     # dataset_q: [N, n_dof]
     d_q = torch.norm(dataset_q - q_rand, dim=1)
     
-    # p distance (position only for now)
-    # p_rand: [1, 4, 4]
-    # dataset_p: [N, 4, 4]
-    d_p = torch.norm(dataset_p[:, :3, 3] - p_rand[:, :3, 3], dim=1)
+    # p distance
+    # Convert to t, q
+    t_rand, rot_rand = math_utils.unmake_pose(p_rand)
+    q_rand_quat = math_utils.quat_from_matrix(rot_rand)
+    
+    t_data, rot_data = math_utils.unmake_pose(dataset_p)
+    q_data_quat = math_utils.quat_from_matrix(rot_data)
+    
+    # Expand to match dataset size
+    N = dataset_q.shape[0]
+    if t_rand.shape[0] == 1 and N > 1:
+        t_rand = t_rand.expand(N, 3)
+        q_rand_quat = q_rand_quat.expand(N, 4)
+
+    pos_err, rot_err = math_utils.compute_pose_error(
+        t_rand, q_rand_quat, t_data, q_data_quat, rot_error_type="axis_angle"
+    )
+    
+    d_p_pos = torch.norm(pos_err, dim=1)
+    d_p_rot = torch.norm(rot_err, dim=1)
     
     # Total distance (weighted)
     # Heuristic weights
     w_q = 1.0
-    w_p = 5.0 # Position is important
+    w_p_pos = 5.0
+    w_p_rot = 1.0
     
-    d_total = w_q * d_q + w_p * d_p
+    d_total = w_q * d_q + w_p_pos * d_p_pos + w_p_rot * d_p_rot
     
     idx = torch.argmin(d_total)
     return idx

@@ -111,6 +111,7 @@ def main():
     state_nearest = None # (q, p, index)
     state_rand = None    # (q, p)
     state_interp = None  # (q, p)
+    state_path = None    # (q_path, p_path)
     
     # GUI elements
     with server.gui.add_folder("RRT Controls"):
@@ -257,46 +258,12 @@ def main():
                     # No, ViserUrdf doesn't let us attach points to links easily.
                     # We have to compute FK for interpolated q and place points.
                     
-                    if 'contact_pos' in sample and 'contact_link_id' in sample:
-                        contact_pos = sample['contact_pos']
-                        contact_link_ids = sample['contact_link_id']
-                        
-                        if isinstance(contact_pos, torch.Tensor):
-                            contact_pos = contact_pos.detach().cpu().numpy()
-                        if isinstance(contact_link_ids, torch.Tensor):
-                            contact_link_ids = contact_link_ids.detach().cpu().numpy()
-                            
-                        q_interp = state_interp[0].flatten().cpu().numpy()
-                        joint_names = lygra_robot.get_active_joints()
-                        cfg = {name: val for name, val in zip(joint_names, q_interp)}
-                        
-                        # We need to use urdf_model to get transforms
-                        # But urdf_model is shared. We should be careful.
-                        # It's fine, we just update cfg, get transform, and use it.
-                        urdf_model.update_cfg(cfg)
-                        
-                        contact_points_robot = []
-                        for i in range(len(contact_pos)):
-                            link_id = int(contact_link_ids[i])
-                            if link_id >= 0 and link_id < len(tree.links):
-                                link_name = tree.links[link_id]
-                                if link_name in urdf_model.link_map:
-                                    T_link = urdf_model.get_transform(link_name, urdf_model.base_link)
-                                    p_link = contact_pos[i]
-                                    p_robot = (T_link @ np.append(p_link, 1))[:3]
-                                    contact_points_robot.append(p_robot)
-                                    
-                        if contact_points_robot:
-                            server.scene.add_point_cloud(
-                                name="/root_interp/contact_pos",
-                                points=np.array(contact_points_robot),
-                                colors=np.array([[0.0, 0.0, 1.0]] * len(contact_points_robot)),
-                                point_size=0.005
-                            )
+                    # Removed blue contact visualization as requested.
+                    pass
 
     @sample_btn.on_click
     def _(_):
-        nonlocal state_nearest, state_rand, state_interp
+        nonlocal state_nearest, state_rand, state_interp, state_path
         
         # 1. Sample Random
         # We need robot instance to sample q
@@ -327,19 +294,24 @@ def main():
         state_nearest = (q_nn, p_nn, idx)
         
         # 3. Interpolate (at current slider value)
-        t = interp_slider.value
-        q_interp, p_interp = interpolate_state(q_nn, p_nn, q_rand, p_rand, t)
-        state_interp = (q_interp, p_interp)
+        # t = interp_slider.value
+        q_path, p_path = interpolate_state(q_nn, p_nn, q_rand, p_rand, num_steps=100)
+        state_path = (q_path, p_path)
+        
+        idx_interp = int(interp_slider.value * (len(q_path) - 1))
+        idx_interp = max(0, min(idx_interp, len(q_path) - 1))
+        state_interp = (q_path[idx_interp:idx_interp+1], p_path[idx_interp:idx_interp+1])
         
         update_visualization()
 
     @interp_slider.on_update
     def _(_):
         nonlocal state_interp
-        if state_nearest and state_rand:
-            t = interp_slider.value
-            q_interp, p_interp = interpolate_state(state_nearest[0], state_nearest[1], state_rand[0], state_rand[1], t)
-            state_interp = (q_interp, p_interp)
+        if state_path:
+            q_path, p_path = state_path
+            idx_interp = int(interp_slider.value * (len(q_path) - 1))
+            idx_interp = max(0, min(idx_interp, len(q_path) - 1))
+            state_interp = (q_path[idx_interp:idx_interp+1], p_path[idx_interp:idx_interp+1])
             update_visualization()
             
     @show_nearest.on_update
