@@ -33,7 +33,7 @@ def get_args():
     parser.add_argument('--robot', type=str, default="leap", help='Robot Name')
     parser.add_argument('--batch_size_outer', type=int, default=128, help='Outer batch size (Object Pose)')
     parser.add_argument('--batch_size_inner', type=int, default=128, help='Inner batch size (Contact Domain Variants)')
-    parser.add_argument('--n_batches', type=int, default=10, help='Number of batches to run')
+    parser.add_argument('--n_batches', type=int, default=2, help='Number of batches to run')
     parser.add_argument('--n_grasps', type=int, default=-1, help='Total number of grasps to generate (overrides n_batches if > 0)')
     parser.add_argument('--n_contact', type=int, default=3, help='Number of non-static contacts to optimize')
     parser.add_argument('--n_sample_point', type=int, default=2048, help='Number of sampled object points')
@@ -42,7 +42,7 @@ def get_args():
     parser.add_argument('--cf_accel', type=str, default='lbvhs2', help='Contact Field Acceleration Structure')
     parser.add_argument('--object_pose_sampling_strategy', type=str, default='canonical', help='Object pose sampling strategy')
     parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
-    parser.add_argument('--output_dir', type=str, default="./outputs", help='Directory to save the dataset')
+    parser.add_argument('--output_dir', type=str, default="./outputs/grasp_dataset", help='Directory to save the dataset')
     parser.add_argument('--push_to_hub', type=str, default="iantc104/leap_hand_grasp_cube", help='Hugging Face Hub repository name to push to (e.g., "username/dataset")')
 
     args = parser.parse_args()
@@ -164,7 +164,7 @@ def generate_grasps(args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_s
             decomposed_mesh_data=decomposed_mesh_data
         )
 
-    return result
+    return result, contact_ids
 
 def main(args):
     # -----------------
@@ -265,7 +265,7 @@ def main(args):
             if total_grasps_needed is None and batch_count >= args.n_batches:
                 break
             
-            result = generate_grasps(
+            result, contact_ids = generate_grasps(
                 args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_static_mesh_data, decomposed_mesh_data,
                 self_collision_link_pairs, contact_field, dependency_sets, contact_parent_ids, dependency_matrix,
                 accel_structure, object_mesh, points_all, normals_all, points, normals, gpu_memory_pool
@@ -289,6 +289,8 @@ def main(args):
                     if total_grasps_needed is not None and len(all_results) >= total_grasps_needed:
                         break
                     item = {key: batch_data[key][idx] for key in keys}
+                    item['contact_ids'] = contact_ids.cpu().numpy()
+                    item['batch_index'] = batch_count
                     item['mesh_path'] = args.object_mesh_path
                     item['robot_name'] = args.robot
                     all_results.append(item)
