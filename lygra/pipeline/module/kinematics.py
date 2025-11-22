@@ -27,7 +27,8 @@ def batch_ik(
     err_thresh=0.02,
     max_iter=12,
     step_size=0.4,
-    filter=True
+    filter=True,
+    q_init=None,
 ):
     batch_size = contact_ids.shape[0]
     contact_link_ids = contact_parent_ids[contact_ids]  # [batch, n_contact]
@@ -48,7 +49,8 @@ def batch_ik(
         all_joint_result_buffer=gpu_memory_pool.get_ik_joint_buffer(batch_size, n_retry),
         all_link_result_buffer=gpu_memory_pool.get_ik_link_buffer(batch_size, n_retry),
         jac_result_buffer=gpu_memory_pool.get_ik_jac_result_buffer(batch_size, n_retry),
-        J_err_buffer=gpu_memory_pool.get_ik_jac_error_buffer(batch_size, n_retry, contact_link_ids.size(-1))
+        J_err_buffer=gpu_memory_pool.get_ik_jac_error_buffer(batch_size, n_retry, contact_link_ids.size(-1)),
+        q_init=q_init
     )
 
     q = ik_result["q"]

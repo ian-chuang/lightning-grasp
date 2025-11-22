@@ -28,6 +28,37 @@ from lygra.pipeline.module.contact_optimization import search_contact_point
 from lygra.pipeline.module.kinematics import batch_ik, batch_contact_adjustment
 from lygra.pipeline.module.postprocess import batch_assign_free_finger_and_filter
 
+
+"""
+how to randomly sample q
+
+if single_update_mode:
+    # in single update mode, we only update q once.
+    # this mode is used for fine-grained contact adjustment.
+    n_retry = 1 
+    # max_iter = 1
+
+batch_size = target_pos.size(0)
+device = target_pos.device
+n_dof = tree.n_dof()
+n_link = tree.n_link()
+n_contact = contact_link_ids.shape[1]
+
+t = time.time()
+joint_limit_lower, joint_limit_upper = tree.get_active_joint_limit()
+# print("lower", joint_limit_lower)
+# print("upper", joint_limit_upper)
+
+joint_limit_lower = torch.from_numpy(joint_limit_lower).to(device)
+joint_limit_upper = torch.from_numpy(joint_limit_upper).to(device)
+
+if single_update_mode:
+    q = q_init.unsqueeze(1)
+else:
+    q = torch.rand(batch_size, n_retry, n_dof).to(device) * (joint_limit_upper - joint_limit_lower) + joint_limit_lower
+"""
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="Grasp Dataset Generation Script")
     parser.add_argument('--robot', type=str, default="leap", help='Robot Name')
@@ -134,7 +165,8 @@ def generate_grasps(args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_s
             target_contact_pos=target_contact_pos.float(),
             target_contact_normal=target_contact_normal.float(),
             object_pose=object_poses.float(),
-            gpu_memory_pool=gpu_memory_pool
+            gpu_memory_pool=gpu_memory_pool,
+            q_init=None,
         )
         
         # Kinematics Optimization (II)
