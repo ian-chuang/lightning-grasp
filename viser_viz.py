@@ -15,6 +15,7 @@ import yourdfpy
 try:
     from lygra.robot import build_robot
     from lygra.utils.geom_utils import MeshObject
+    from lygra.kinematics import build_kinematics_tree
 except ImportError:
     print("Lygra package not found. Please ensure you are in the correct environment.")
     exit(1)
@@ -70,11 +71,14 @@ def main():
     current_robot_name = None
     current_mesh_path = None
     viser_urdf: Optional[ViserUrdf] = None
+    urdf = None
+    tree = None
+    lygra_robot = None
     object_handle = None
-    contact_targets_handle = None
-    contact_normals_handle = None
+    target_pos_handle = None
+    target_normal_handle = None
     contact_pos_handle = None
-    contact_pos_normal_handle = None
+    contact_normal_handle = None
     
     # GUI elements
     with server.gui.add_folder("Grasp Control"):
@@ -97,10 +101,10 @@ def main():
         show_robot_mesh = server.gui.add_checkbox("Show Robot Mesh", True)
         show_object_mesh = server.gui.add_checkbox("Show Object Mesh", True)
         show_grid = server.gui.add_checkbox("Show Grid", True)
-        show_contact_targets = server.gui.add_checkbox("Show Contact Targets", True)
-        show_contact_normals = server.gui.add_checkbox("Show Contact Normals", True)
+        show_target_pos = server.gui.add_checkbox("Show Target Pos", True)
+        show_target_normal = server.gui.add_checkbox("Show Target Normals", True)
         show_contact_pos = server.gui.add_checkbox("Show Contact Pos", True)
-        show_contact_pos_normal = server.gui.add_checkbox("Show Contact Pos Normals", True)
+        show_contact_normal = server.gui.add_checkbox("Show Contact Normals", True)
 
     # Grid
     grid = server.scene.add_grid("grid", width=1, height=1, cell_size=0.1)
@@ -110,7 +114,7 @@ def main():
         grid.visible = show_grid.value
 
     def update_scene(index):
-        nonlocal current_robot_name, current_mesh_path, viser_urdf, object_handle, contact_targets_handle, contact_normals_handle, contact_pos_handle, contact_pos_normal_handle
+        nonlocal current_robot_name, current_mesh_path, viser_urdf, urdf, tree, lygra_robot, object_handle, target_pos_handle, target_normal_handle, contact_pos_handle, contact_normal_handle
         
         # Get data sample
         sample = dataset[int(index)]
@@ -145,6 +149,9 @@ def main():
             lygra_robot = build_robot(robot_name)
             urdf_path = lygra_robot.urdf_path
             
+            # Build Kinematics Tree
+            tree = build_kinematics_tree(urdf_path, lygra_robot.get_active_joints())
+
             # Load URDF
             urdf = yourdfpy.URDF.load(urdf_path)
 
@@ -220,22 +227,22 @@ def main():
             target_normal_world = (T_world_robot[:3, :3] @ target_normal.T).T
             
             # Contact Targets: Point cloud
-            if contact_targets_handle is not None:
-                contact_targets_handle.remove()
-            if show_contact_targets.value:
-                contact_targets_handle = server.scene.add_point_cloud(
-                    name="/contact_targets",
+            if target_pos_handle is not None:
+                target_pos_handle.remove()
+            if show_target_pos.value:
+                target_pos_handle = server.scene.add_point_cloud(
+                    name="/target_pos",
                     points=target_pos_world,
                     colors=np.array([[1.0, 0.0, 0.0]] * len(target_pos_world)),  # Red points
                     point_size=0.005
                 )
             else:
-                contact_targets_handle = None
+                target_pos_handle = None
             
             # Contact Normals: Line segments
-            if contact_normals_handle is not None:
-                contact_normals_handle.remove()
-            if show_contact_normals.value:
+            if target_normal_handle is not None:
+                target_normal_handle.remove()
+            if show_target_normal.value:
                 # Create lines: from target_pos to target_pos + normal * scale
                 scale = 0.02  # Length of normal arrows
                 lines = []
@@ -243,14 +250,14 @@ def main():
                     lines.append([pos, pos + normal * scale])
                 lines = np.array(lines)  # Shape: (N, 2, 3)
                 
-                contact_normals_handle = server.scene.add_line_segments(
-                    name="/contact_normals",
+                target_normal_handle = server.scene.add_line_segments(
+                    name="/target_normals",
                     points=lines,
                     colors=(0.0, 1.0, 0.0),  # Green lines
                     line_width=2.0
                 )
             else:
-                contact_normals_handle = None
+                target_normal_handle = None
 
         # Update Contact Pos and Normals
         if 'contact_pos' in sample and 'contact_normal' in sample:
@@ -262,18 +269,58 @@ def main():
             if isinstance(contact_normal, torch.Tensor):
                 contact_normal = contact_normal.detach().cpu().numpy()
             
-            # Transform contact_pos to world frame
-            # contact_pos is in robot frame, so apply T_world_robot
-            contact_pos_world = (T_world_robot @ np.concatenate([contact_pos, np.ones((contact_pos.shape[0], 1))], axis=1).T).T[:, :3]
-            
-            # Transform normals
-            # contact_normal is in robot frame, so apply T_world_robot rotation
-            contact_normal_world = (T_world_robot[:3, :3] @ contact_normal.T).T
+            contact_pos_world = []
+            contact_normal_world = []
+
+            if 'contact_link_id' in sample and urdf is not None and tree is not None:
+                contact_link_ids = sample['contact_link_id']
+                if isinstance(contact_link_ids, torch.Tensor):
+                    contact_link_ids = contact_link_ids.detach().cpu().numpy()
+                
+                # Update URDF configuration to get link poses
+                joint_names = lygra_robot.get_active_joints()
+                cfg = {name: val for name, val in zip(joint_names, q)}
+                urdf.update_cfg(cfg)
+                
+                for i in range(len(contact_pos)):
+                    link_id = int(contact_link_ids[i])
+                    if link_id >= 0 and link_id < len(tree.links):
+                        link_name = tree.links[link_id]
+                        # Check if link exists in URDF (it should)
+                        if link_name in urdf.link_map:
+                            T_link = urdf.get_transform(link_name, urdf.base_link)
+                            
+                            p_link = contact_pos[i]
+                            n_link = contact_normal[i]
+                            
+                            # Transform to robot base frame
+                            p_robot = (T_link @ np.append(p_link, 1))[:3]
+                            n_robot = T_link[:3, :3] @ n_link
+                            
+                            # Transform to world frame
+                            p_world = (T_world_robot @ np.append(p_robot, 1))[:3]
+                            n_world = T_world_robot[:3, :3] @ n_robot
+                            
+                            contact_pos_world.append(p_world)
+                            contact_normal_world.append(n_world)
+            else:
+                # Fallback if no link ids (assume robot frame)
+                # Transform contact_pos to world frame
+                contact_pos_world = (T_world_robot @ np.concatenate([contact_pos, np.ones((contact_pos.shape[0], 1))], axis=1).T).T[:, :3]
+                
+                # Transform normals
+                contact_normal_world = (T_world_robot[:3, :3] @ contact_normal.T).T
+                
+                contact_pos_world = list(contact_pos_world)
+                contact_normal_world = list(contact_normal_world)
+
+            contact_pos_world = np.array(contact_pos_world)
+            contact_normal_world = np.array(contact_normal_world)
             
             # Contact Pos: Point cloud
             if contact_pos_handle is not None:
                 contact_pos_handle.remove()
-            if show_contact_pos.value:
+            if show_contact_pos.value and len(contact_pos_world) > 0:
                 contact_pos_handle = server.scene.add_point_cloud(
                     name="/contact_pos",
                     points=contact_pos_world,
@@ -284,9 +331,9 @@ def main():
                 contact_pos_handle = None
             
             # Contact Pos Normals: Line segments
-            if contact_pos_normal_handle is not None:
-                contact_pos_normal_handle.remove()
-            if show_contact_pos_normal.value:
+            if contact_normal_handle is not None:
+                contact_normal_handle.remove()
+            if show_contact_normal.value and len(contact_pos_world) > 0:
                 # Create lines: from contact_pos to contact_pos + normal * scale
                 scale = 0.02  # Length of normal arrows
                 lines = []
@@ -294,14 +341,14 @@ def main():
                     lines.append([pos, pos + normal * scale])
                 lines = np.array(lines)  # Shape: (N, 2, 3)
                 
-                contact_pos_normal_handle = server.scene.add_line_segments(
-                    name="/contact_pos_normals",
+                contact_normal_handle = server.scene.add_line_segments(
+                    name="/contact_normals",
                     points=lines,
                     colors=(1.0, 1.0, 0.0),  # Yellow lines
                     line_width=2.0
                 )
             else:
-                contact_pos_normal_handle = None
+                contact_normal_handle = None
 
     # Callbacks
     @grasp_index_slider.on_update
@@ -330,11 +377,11 @@ def main():
         if object_handle:
             object_handle.visible = show_object_mesh.value
 
-    @show_contact_targets.on_update
+    @show_target_pos.on_update
     def _(_):
         update_scene(grasp_index_slider.value)
 
-    @show_contact_normals.on_update
+    @show_target_normal.on_update
     def _(_):
         update_scene(grasp_index_slider.value)
 
@@ -342,7 +389,7 @@ def main():
     def _(_):
         update_scene(grasp_index_slider.value)
 
-    @show_contact_pos_normal.on_update
+    @show_contact_normal.on_update
     def _(_):
         update_scene(grasp_index_slider.value)
 
