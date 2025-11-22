@@ -34,6 +34,7 @@ def get_args():
     parser.add_argument('--batch_size_outer', type=int, default=128, help='Outer batch size (Object Pose)')
     parser.add_argument('--batch_size_inner', type=int, default=128, help='Inner batch size (Contact Domain Variants)')
     parser.add_argument('--n_batches', type=int, default=10, help='Number of batches to run')
+    parser.add_argument('--n_grasps', type=int, default=-1, help='Total number of grasps to generate (overrides n_batches if > 0)')
     parser.add_argument('--n_contact', type=int, default=3, help='Number of non-static contacts to optimize')
     parser.add_argument('--n_sample_point', type=int, default=2048, help='Number of sampled object points')
     parser.add_argument('--ik_finetune_iter', type=int, default=5, help='Number of IK finetune iterations')
@@ -249,39 +250,55 @@ def main(args):
     # -----------------
     all_results = []
     
-    print(f"Starting grasp generation for {args.n_batches} batches...")
-    for i in tqdm(range(args.n_batches)):
-        result = generate_grasps(
-            args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_static_mesh_data, decomposed_mesh_data,
-            self_collision_link_pairs, contact_field, dependency_sets, contact_parent_ids, dependency_matrix,
-            accel_structure, object_mesh, points_all, normals_all, points, normals, gpu_memory_pool
-        )
-        
-        # Convert tensors to numpy for storage
-        batch_data = {}
-        n_items = 0
-        for k, v in result.items():
-            if isinstance(v, torch.Tensor):
-                batch_data[k] = v.cpu().numpy()
-                n_items = len(batch_data[k])
-            else:
-                # Handle non-tensor data if any, though result usually contains tensors
-                pass
-
-        breakpoint()
-        
-        if n_items > 0:
-            # Convert dict of arrays to list of dicts for easier DataFrame creation
-            # Or keep as dict of arrays and concat later. 
-            # Let's keep as list of dicts to be safe with varying lengths if any (though they should be same)
+    if args.n_grasps > 0:
+        total_grasps_needed = args.n_grasps
+        print(f"Starting grasp generation for {total_grasps_needed} grasps...")
+    else:
+        total_grasps_needed = None
+        print(f"Starting grasp generation for {args.n_batches} batches...")
+    
+    batch_count = 0
+    with tqdm() as pbar:
+        while True:
+            if total_grasps_needed is not None and len(all_results) >= total_grasps_needed:
+                break
+            if total_grasps_needed is None and batch_count >= args.n_batches:
+                break
             
-            # Efficient way: create a list of dicts
-            keys = list(batch_data.keys())
-            for idx in range(n_items):
-                item = {key: batch_data[key][idx] for key in keys}
-                item['mesh_path'] = args.object_mesh_path
-                item['robot_name'] = args.robot
-                all_results.append(item)
+            result = generate_grasps(
+                args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_static_mesh_data, decomposed_mesh_data,
+                self_collision_link_pairs, contact_field, dependency_sets, contact_parent_ids, dependency_matrix,
+                accel_structure, object_mesh, points_all, normals_all, points, normals, gpu_memory_pool
+            )
+            
+            # Convert tensors to numpy for storage
+            batch_data = {}
+            n_items = 0
+            for k, v in result.items():
+                if isinstance(v, torch.Tensor):
+                    batch_data[k] = v.cpu().numpy()
+                    n_items = len(batch_data[k])
+                else:
+                    # Handle non-tensor data if any, though result usually contains tensors
+                    pass
+            
+            if n_items > 0:
+                # Convert dict of arrays to list of dicts
+                keys = list(batch_data.keys())
+                for idx in range(n_items):
+                    if total_grasps_needed is not None and len(all_results) >= total_grasps_needed:
+                        break
+                    item = {key: batch_data[key][idx] for key in keys}
+                    item['mesh_path'] = args.object_mesh_path
+                    item['robot_name'] = args.robot
+                    all_results.append(item)
+            
+            batch_count += 1
+            pbar.update(1)
+            if total_grasps_needed is None:
+                pbar.set_description(f"Batch {batch_count}/{args.n_batches}")
+            else:
+                pbar.set_description(f"Batch {batch_count} (total grasps: {len(all_results)}/{total_grasps_needed})")
 
     print(f"Generated {len(all_results)} valid grasps.")
 
