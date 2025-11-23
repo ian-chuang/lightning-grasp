@@ -128,7 +128,7 @@ def interpolate_state_tau(q_start, p_start, q_end, p_end, tau):
         return q_interp.squeeze(0), p_interp.squeeze(0)
     return q_interp, p_interp
 
-def find_nearest_neighbor(q_rand, p_rand, dataset_q, dataset_p, w_q=1.0, w_p_pos=5.0, w_p_rot=1.0):
+def find_nearest_neighbor(q_rand, p_rand, dataset_q, dataset_p, w_q=1.0, w_p_pos=50.0, w_p_rot=3.0):
     """
     Find nearest neighbor in dataset.
     Supports batched inputs.
@@ -186,3 +186,48 @@ def find_nearest_neighbor(q_rand, p_rand, dataset_q, dataset_p, w_q=1.0, w_p_pos
     if not is_batched:
         return indices[0]
     return indices
+
+def rank_nearest_neighbors(q_rand, p_rand, dataset_q, dataset_p, w_q=1.0, w_p_pos=50.0, w_p_rot=3.0):
+    """
+    Compute distances to all dataset points and return sorted indices.
+    q_rand: [n_dof] (Single query)
+    p_rand: [4, 4] (Single query)
+    dataset_q: [N, n_dof]
+    dataset_p: [N, 4, 4]
+    
+    Returns: sorted_indices [N], sorted_distances [N]
+    """
+    # Ensure single query
+    if q_rand.ndim == 2:
+        q_rand = q_rand.squeeze(0)
+    if p_rand.ndim == 3:
+        p_rand = p_rand.squeeze(0)
+        
+    # q distance
+    # [N]
+    d_q = torch.norm(dataset_q - q_rand, dim=1)
+    
+    # p distance
+    t_rand, rot_rand = math_utils.unmake_pose(p_rand.unsqueeze(0)) # [1, 3], [1, 3, 3]
+    q_rand_quat = math_utils.quat_from_matrix(rot_rand) # [1, 4]
+    
+    t_data, rot_data = math_utils.unmake_pose(dataset_p) # [N, 3], [N, 3, 3]
+    q_data_quat = math_utils.quat_from_matrix(rot_data) # [N, 4]
+    
+    # Expand query to match N
+    N = dataset_q.shape[0]
+    t_rand_exp = t_rand.expand(N, 3)
+    q_rand_quat_exp = q_rand_quat.expand(N, 4)
+    
+    pos_err, rot_err = math_utils.compute_pose_error(
+        t_rand_exp, q_rand_quat_exp, t_data, q_data_quat, rot_error_type="axis_angle"
+    ) # [N, 3], [N, 3]
+    
+    d_p_pos = torch.norm(pos_err, dim=1) # [N]
+    d_p_rot = torch.norm(rot_err, dim=1) # [N]
+    
+    d_total = w_q * d_q + w_p_pos * d_p_pos + w_p_rot * d_p_rot # [N]
+    
+    sorted_distances, sorted_indices = torch.sort(d_total)
+    
+    return sorted_indices, sorted_distances
