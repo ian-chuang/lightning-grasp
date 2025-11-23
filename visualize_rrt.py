@@ -39,7 +39,9 @@ def load_grasp_dataset(data_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize RRT Sampling and Interpolation")
-    parser.add_argument('--dataset_path', type=str, required=True, help='Path to the generated dataset file (parquet) or HF Hub ID')
+    parser.add_argument('--dataset_path', type=str, default="iantc104/leap_hand_grasp_cube", help='Path to the generated dataset file (parquet) or HF Hub ID')
+    parser.add_argument('--robot', type=str, default="leap", help='Robot Name')
+    parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host for Viser server')
     parser.add_argument('--port', type=int, default=8080, help='Port for Viser server')
     args = parser.parse_args()
@@ -193,7 +195,7 @@ def main():
                 # But wait, our root frames (/root_nearest etc) already have T_world_robot applied!
                 # So we just need to set object pose relative to root frame, which is exactly p!
                 
-                p_np = p.detach().cpu().numpy()[0] # [4, 4]
+                p_np = p.detach().cpu().numpy() # [4, 4]
                 R = p_np[:3, :3]
                 t = p_np[:3, 3]
                 
@@ -224,13 +226,10 @@ def main():
                     if isinstance(target_pos, torch.Tensor):
                         target_pos = target_pos.detach().cpu().numpy()
                         
-                    p_nearest = state_nearest[1].detach().cpu().numpy()[0] # [4, 4]
-                    p_interp = state_interp[1].detach().cpu().numpy()[0]   # [4, 4]
-                    
-                    # Transform target_pos from Robot Frame (at p_nearest) to Object Frame
-                    # T_robot_obj_nearest = p_nearest
-                    # P_robot = T_robot_obj_nearest @ P_obj
-                    # P_obj = inv(T_robot_obj_nearest) @ P_robot
+                    p_nearest = state_nearest[1].detach().cpu().numpy() # [4, 4]
+                    p_interp = state_interp[1].detach().cpu().numpy()   # [4, 4]
+
+                    # p_interp @ np.linalg.inv(p_nearest) @ target_pos_homog # world2interp @ nn2world @ obj2robot_nearest
                     
                     T_obj_robot_nearest = np.linalg.inv(p_nearest)
                     
@@ -271,10 +270,10 @@ def main():
         # Let's pick the first one to get robot/object info if not loaded.
         if lygra_robot is None:
             sample0 = dataset[0]
-            load_robot_and_object(sample0['robot_name'], sample0['mesh_path'])
+            load_robot_and_object(args.robot, args.object_mesh_path)
             
-        q_rand = sample_random_q(lygra_robot)
-        p_rand = sample_random_object_pose(lygra_robot)
+        q_rand = sample_random_q(lygra_robot)[0]
+        p_rand = sample_random_object_pose(lygra_robot)[0]
         state_rand = (q_rand, p_rand)
         
         # 2. Find Nearest Neighbor
@@ -282,12 +281,12 @@ def main():
         
         # Load NN state
         sample_nn = dataset[int(idx)]
-        q_nn = sample_nn['q'].unsqueeze(0)
-        p_nn = sample_nn['object_pose'].unsqueeze(0)
+        q_nn = sample_nn['q']
+        p_nn = sample_nn['object_pose']
         
         # Ensure robot/object matches (if dataset is mixed)
-        if sample_nn['robot_name'] != current_robot_name or sample_nn['mesh_path'] != current_mesh_path:
-            load_robot_and_object(sample_nn['robot_name'], sample_nn['mesh_path'])
+        if args.robot != current_robot_name or args.object_mesh_path != current_mesh_path:
+            load_robot_and_object(args.robot, args.object_mesh_path)
             # Re-sample random if robot changed? 
             # For now assume single robot dataset.
             
@@ -300,7 +299,7 @@ def main():
         
         idx_interp = int(interp_slider.value * (len(q_path) - 1))
         idx_interp = max(0, min(idx_interp, len(q_path) - 1))
-        state_interp = (q_path[idx_interp:idx_interp+1], p_path[idx_interp:idx_interp+1])
+        state_interp = (q_path[idx_interp], p_path[idx_interp])
         
         update_visualization()
 
@@ -311,7 +310,7 @@ def main():
             q_path, p_path = state_path
             idx_interp = int(interp_slider.value * (len(q_path) - 1))
             idx_interp = max(0, min(idx_interp, len(q_path) - 1))
-            state_interp = (q_path[idx_interp:idx_interp+1], p_path[idx_interp:idx_interp+1])
+            state_interp = (q_path[idx_interp], p_path[idx_interp])
             update_visualization()
             
     @show_nearest.on_update
@@ -326,7 +325,7 @@ def main():
     # Initial load
     if len(dataset) > 0:
         sample0 = dataset[0]
-        load_robot_and_object(sample0['robot_name'], sample0['mesh_path'])
+        load_robot_and_object(args.robot, args.object_mesh_path)
 
     @server.on_client_connect
     def _(client: viser.ClientHandle) -> None:

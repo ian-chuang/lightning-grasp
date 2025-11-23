@@ -42,7 +42,7 @@ def get_args():
     parser.add_argument('--cf_accel', type=str, default='lbvhs2', help='Contact Field Acceleration Structure')
     parser.add_argument('--object_pose_sampling_strategy', type=str, default='canonical', help='Object pose sampling strategy')
     parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
-    parser.add_argument('--output_dir', type=str, default="./outputs/grasp_dataset", help='Directory to save the dataset')
+    parser.add_argument('--output_dir', type=str, default="./outputs/leap_hand_grasp_cube", help='Directory to save the dataset')
     parser.add_argument('--push_to_hub', type=str, default="iantc104/leap_hand_grasp_cube", help='Hugging Face Hub repository name to push to (e.g., "username/dataset")')
 
     args = parser.parse_args()
@@ -118,17 +118,17 @@ def generate_grasps(args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_s
             target_contact_link_ids=target_contact_link_ids, 
             target_contact_point_idx=target_contact_point_idx
         )
+        contact_link_ids = contact_parent_ids[contact_ids]  # [batch, n_contact]
 
         contact_pos_in_linkf, contact_normal_in_linkf = contact_field.sample_contact_geometry(contact_ids, local_contact_ids)
 
         if len(contact_ids) == 0:
             return {}
-
+        
         # Kinematics Optimization (I)
         result = batch_ik(
             tree=tree,
-            contact_ids=contact_ids,
-            contact_parent_ids=contact_parent_ids,
+            contact_link_ids=contact_link_ids,
             contact_pos_in_linkf=contact_pos_in_linkf.float(),
             contact_normal_in_linkf=contact_normal_in_linkf.float(),
             target_contact_pos=target_contact_pos.float(),
@@ -144,7 +144,6 @@ def generate_grasps(args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_s
             mesh=mesh_data_for_ik,
             q_init=result["q"],
             q_mask=result["q_mask"],
-            contact_ids=contact_ids,
             contact_link_ids=result["contact_link_id"],
             contact_pos_in_linkf=result["contact_pos"],
             contact_normal_in_linkf=result["contact_normal"],
@@ -165,7 +164,7 @@ def generate_grasps(args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_s
             decomposed_mesh_data=decomposed_mesh_data
         )
 
-    return result, contact_ids
+    return result
 
 def main(args):
     # -----------------
@@ -250,8 +249,6 @@ def main(args):
     # Generation Loop
     # -----------------
     all_results_dict = {}
-    all_contact_ids = []
-    all_metadata = []
     
     if args.n_grasps > 0:
         total_grasps_needed = args.n_grasps
@@ -270,7 +267,7 @@ def main(args):
             if total_grasps_needed is None and batch_count >= args.n_batches:
                 break
             
-            result, contact_ids = generate_grasps(
+            result = generate_grasps(
                 args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_static_mesh_data, decomposed_mesh_data,
                 self_collision_link_pairs, contact_field, dependency_sets, contact_parent_ids, dependency_matrix,
                 accel_structure, object_mesh, points_all, normals_all, points, normals, gpu_memory_pool
@@ -294,19 +291,6 @@ def main(args):
                 if 'batch_index' not in all_results_dict:
                     all_results_dict['batch_index'] = []
                 all_results_dict['batch_index'].append(batch_indices)
-
-                # Store contact_ids for this batch
-                all_contact_ids.append({
-                    'batch_index': batch_count,
-                    'contact_ids': contact_ids.cpu().numpy()
-                })
-                
-                # Store metadata for this batch
-                all_metadata.append({
-                    'batch_index': batch_count,
-                    'mesh_path': args.object_mesh_path,
-                    'robot_name': args.robot
-                })
             
             batch_count += 1
             pbar.update(1)
@@ -330,28 +314,12 @@ def main(args):
             final_results[k] = np.concatenate(v_list, axis=0)
             
         ds_grasps = Dataset.from_dict(final_results)
-        output_file_grasps = os.path.join(args.output_dir, f"grasps_{args.robot}.parquet")
-        print(f"Saving grasps dataset to {output_file_grasps}...")
-        ds_grasps.to_parquet(output_file_grasps)
-
-        # 2. Contact IDs Dataset
-        ds_contact_ids = Dataset.from_list(all_contact_ids)
-        output_file_contact = os.path.join(args.output_dir, f"contact_ids_{args.robot}.parquet")
-        print(f"Saving contact_ids dataset to {output_file_contact}...")
-        ds_contact_ids.to_parquet(output_file_contact)
-
-        # 3. Metadata Dataset
-        ds_metadata = Dataset.from_list(all_metadata)
-        output_file_meta = os.path.join(args.output_dir, f"metadata_{args.robot}.parquet")
-        print(f"Saving metadata dataset to {output_file_meta}...")
-        ds_metadata.to_parquet(output_file_meta)
+        ds_grasps.save_to_disk(args.output_dir)
         
         if args.push_to_hub:
             print(f"Pushing dataset to Hugging Face Hub: {args.push_to_hub}...")
             # Push as separate configurations to allow different schemas
-            ds_grasps.push_to_hub(args.push_to_hub, config_name="default", split="train")
-            ds_contact_ids.push_to_hub(args.push_to_hub, config_name="contact_ids", split="train")
-            ds_metadata.push_to_hub(args.push_to_hub, config_name="metadata", split="train")
+            ds_grasps.push_to_hub(args.push_to_hub, split="train")
             
         print("Done.")
     else:
