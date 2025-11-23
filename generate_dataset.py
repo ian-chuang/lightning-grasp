@@ -249,9 +249,7 @@ def main(args):
     # -----------------
     # Generation Loop
     # -----------------
-    all_results_dict = {}
-    all_contact_ids = []
-    all_metadata = []
+    collected_data = {}
     
     if args.n_grasps > 0:
         total_grasps_needed = args.n_grasps
@@ -276,37 +274,34 @@ def main(args):
                 accel_structure, object_mesh, points_all, normals_all, points, normals, gpu_memory_pool
             )
             
-            # Convert tensors to numpy for storage
+            # Check if we have any results in this batch
             batch_size = 0
             for k, v in result.items():
                 if isinstance(v, torch.Tensor):
-                    val = v.cpu().numpy()
-                    if k not in all_results_dict:
-                        all_results_dict[k] = []
-                    all_results_dict[k].append(val)
-                    batch_size = len(val)
+                    batch_size = len(v)
+                    break
             
             if batch_size > 0:
+                # Initialize collected_data keys if first successful batch
+                if not collected_data:
+                    collected_data['batch_index'] = []
+                    collected_data['contact_ids'] = []
+                    collected_data['mesh_path'] = []
+                    collected_data['robot_name'] = []
+                    for k in result.keys():
+                        if isinstance(result[k], torch.Tensor):
+                            collected_data[k] = []
+
                 total_grasps_generated += batch_size
                 
-                # Add batch_index to result
-                batch_indices = np.full((batch_size,), batch_count, dtype=np.int32)
-                if 'batch_index' not in all_results_dict:
-                    all_results_dict['batch_index'] = []
-                all_results_dict['batch_index'].append(batch_indices)
-
-                # Store contact_ids for this batch
-                all_contact_ids.append({
-                    'batch_index': batch_count,
-                    'contact_ids': contact_ids.cpu().numpy()
-                })
+                collected_data['batch_index'].append(batch_count)
+                collected_data['contact_ids'].append(contact_ids.cpu().numpy())
+                collected_data['mesh_path'].append(args.object_mesh_path)
+                collected_data['robot_name'].append(args.robot)
                 
-                # Store metadata for this batch
-                all_metadata.append({
-                    'batch_index': batch_count,
-                    'mesh_path': args.object_mesh_path,
-                    'robot_name': args.robot
-                })
+                for k in result.keys():
+                    if isinstance(result[k], torch.Tensor):
+                        collected_data[k].append(result[k].cpu().numpy())
             
             batch_count += 1
             pbar.update(1)
@@ -323,35 +318,16 @@ def main(args):
     if total_grasps_generated > 0:
         os.makedirs(args.output_dir, exist_ok=True)
         
-        # 1. Grasps Dataset (Result Data + Batch Index)
-        # Concatenate all batches
-        final_results = {}
-        for k, v_list in all_results_dict.items():
-            final_results[k] = np.concatenate(v_list, axis=0)
-            
-        ds_grasps = Dataset.from_dict(final_results)
-        output_file_grasps = os.path.join(args.output_dir, f"grasps_{args.robot}.parquet")
-        print(f"Saving grasps dataset to {output_file_grasps}...")
-        ds_grasps.to_parquet(output_file_grasps)
-
-        # 2. Contact IDs Dataset
-        ds_contact_ids = Dataset.from_list(all_contact_ids)
-        output_file_contact = os.path.join(args.output_dir, f"contact_ids_{args.robot}.parquet")
-        print(f"Saving contact_ids dataset to {output_file_contact}...")
-        ds_contact_ids.to_parquet(output_file_contact)
-
-        # 3. Metadata Dataset
-        ds_metadata = Dataset.from_list(all_metadata)
-        output_file_meta = os.path.join(args.output_dir, f"metadata_{args.robot}.parquet")
-        print(f"Saving metadata dataset to {output_file_meta}...")
-        ds_metadata.to_parquet(output_file_meta)
+        # Create single dataset where each row is a batch
+        ds = Dataset.from_dict(collected_data)
+        
+        output_file = os.path.join(args.output_dir, f"grasps_batched_{args.robot}.parquet")
+        print(f"Saving batched dataset to {output_file}...")
+        ds.to_parquet(output_file)
         
         if args.push_to_hub:
             print(f"Pushing dataset to Hugging Face Hub: {args.push_to_hub}...")
-            # Push as separate configurations to allow different schemas
-            ds_grasps.push_to_hub(args.push_to_hub, config_name="default", split="train")
-            ds_contact_ids.push_to_hub(args.push_to_hub, config_name="contact_ids", split="train")
-            ds_metadata.push_to_hub(args.push_to_hub, config_name="metadata", split="train")
+            ds.push_to_hub(args.push_to_hub, split="train")
             
         print("Done.")
     else:
