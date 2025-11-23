@@ -34,7 +34,7 @@ def get_args():
     parser.add_argument('--batch_size_outer', type=int, default=128, help='Outer batch size (Object Pose)')
     parser.add_argument('--batch_size_inner', type=int, default=128, help='Inner batch size (Contact Domain Variants)')
     parser.add_argument('--n_batches', type=int, default=1, help='Number of batches to run')
-    parser.add_argument('--n_grasps', type=int, default=1, help='Total number of grasps to generate (overrides n_batches if > 0)')
+    parser.add_argument('--n_grasps', type=int, default=50000, help='Total number of grasps to generate (overrides n_batches if > 0)')
     parser.add_argument('--n_contact', type=int, default=3, help='Number of non-static contacts to optimize')
     parser.add_argument('--n_sample_point', type=int, default=2048, help='Number of sampled object points')
     parser.add_argument('--ik_finetune_iter', type=int, default=5, help='Number of IK finetune iterations')

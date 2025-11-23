@@ -40,10 +40,10 @@ def get_args():
     parser = argparse.ArgumentParser(description="Grasp Dataset Generation Script")
     parser.add_argument('--dataset_path', type=str, default="iantc104/leap_hand_grasp_cube", help='Hugging Face Hub dataset path')
     parser.add_argument('--robot', type=str, default="leap", help='Robot Name')
-    parser.add_argument('--batch_size', type=int, default=8192, help='Outer batch size (Object Pose)')
-    parser.add_argument('--batch_cutoff', type=int, default=-1, help='Batch size cutoff for processing')
+    parser.add_argument('--batch_size', type=int, default=4096, help='Outer batch size (Object Pose)')
+    parser.add_argument('--batch_cutoff', type=int, default=1000, help='Batch size cutoff for processing')
     parser.add_argument('--n_batches', type=int, default=2, help='Number of batches to run')
-    parser.add_argument('--n_grasps', type=int, default=100, help='Total number of grasps to generate (overrides n_batches if > 0)')
+    parser.add_argument('--n_grasps', type=int, default=200000, help='Total number of grasps to generate (overrides n_batches if > 0)')
     parser.add_argument('--n_contact', type=int, default=3, help='Number of non-static contacts to optimize')
     parser.add_argument('--n_sample_point', type=int, default=2048, help='Number of sampled object points')
     parser.add_argument('--ik_finetune_iter', type=int, default=5, help='Number of IK finetune iterations')
@@ -51,8 +51,8 @@ def get_args():
     parser.add_argument('--cf_accel', type=str, default='lbvhs2', help='Contact Field Acceleration Structure')
     parser.add_argument('--object_pose_sampling_strategy', type=str, default='canonical', help='Object pose sampling strategy')
     parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
-    parser.add_argument('--output_dir', type=str, default="./outputs/leap_hand_grasp_cube", help='Directory to save the dataset')
-    parser.add_argument('--push_to_hub', type=str, default="iantc104/leap_hand_grasp_cube", help='Hugging Face Hub repository name to push to (e.g., "username/dataset")')
+    parser.add_argument('--output_dir', type=str, default="./outputs/leap_hand_grasp_cube_rrt", help='Directory to save the dataset')
+    parser.add_argument('--push_to_hub', type=str, default="iantc104/leap_hand_grasp_cube_rrt", help='Hugging Face Hub repository name to push to (e.g., "username/dataset")')
     parser.add_argument('--nn_downsample_size', type=int, default=2048, help='Number of samples to use for nearest neighbor search')
     parser.add_argument('--rrt_tau', type=float, default=0.2, help='RRT interpolation step size (tau)')
     args = parser.parse_args()
@@ -282,7 +282,7 @@ def main(args):
         print(f"Starting grasp generation for {args.n_batches} batches...")
     
     batch_count = 0
-    total_grasps_generated = 0
+    total_grasps_generated = len(dataset)
 
     with tqdm(total=total_grasps_needed if total_grasps_needed else args.n_batches, unit="grasps" if total_grasps_needed else "batches") as pbar:
         while True:
