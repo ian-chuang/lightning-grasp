@@ -139,6 +139,15 @@ def main():
         
         cost_display = server.gui.add_text("NN Cost", "0.0")
 
+        k_slider = server.gui.add_slider(
+            "k (Random Sample)",
+            min=1,
+            max=100,
+            step=1,
+            initial_value=10,
+        )
+        sample_btn = server.gui.add_button("Step to Random Neighbor (Walk Graph)")
+
     with server.gui.add_folder("Interpolation"):
         interp_slider = server.gui.add_slider(
             "t",
@@ -324,6 +333,25 @@ def main():
         update_nn_search()
         update_visualization()
         
+    @sample_btn.on_click
+    def _(_):
+        k = int(k_slider.value)
+        max_rank = int(nn_rank_slider.max)
+        effective_k = min(k, max_rank + 1)
+        
+        random_rank = np.random.randint(0, effective_k)
+        
+        if current_sorted_indices is not None:
+            # Get the dataset index of the selected neighbor
+            new_source_idx = current_sorted_indices[random_rank]
+            
+            # Update the source slider to this new index
+            # This triggers the query_slider callback, which updates the search and visualization
+            query_slider.value = int(new_source_idx)
+            
+            # Reset rank to 0 so we start focused on the new source
+            nn_rank_slider.value = 0
+
     @downsample_slider.on_update
     def _(_):
         nonlocal current_downsample_size
