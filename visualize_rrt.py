@@ -20,7 +20,7 @@ except ImportError:
     print("Lygra package not found. Please ensure you are in the correct environment.")
     exit(1)
 
-from rrt_utils import sample_random_q, sample_random_object_pose, interpolate_state, find_nearest_neighbor
+from rrt_utils import sample_random_q, sample_random_object_pose, interpolate_state, find_nearest_neighbor, interpolate_state_tau
 
 def load_grasp_dataset(data_path):
     """
@@ -223,34 +223,69 @@ def main():
                 
                 if 'target_pos' in sample:
                     target_pos = sample['target_pos'] # [N, 3] in Robot Frame (at p_nearest)
-                    if isinstance(target_pos, torch.Tensor):
-                        target_pos = target_pos.detach().cpu().numpy()
-                        
-                    p_nearest = state_nearest[1].detach().cpu().numpy() # [4, 4]
-                    p_interp = state_interp[1].detach().cpu().numpy()   # [4, 4]
+                    if not isinstance(target_pos, torch.Tensor):
+                        target_pos = torch.tensor(target_pos)
+                    target_pos = target_pos.detach().cpu()
 
-                    # p_interp @ np.linalg.inv(p_nearest) @ target_pos_homog # world2interp @ nn2world @ obj2robot_nearest
+                    p_nn = state_nearest[1].detach().cpu() # [4, 4]
+                    p_interp = state_interp[1].detach().cpu()   # [4, 4]
                     
-                    T_obj_robot_nearest = np.linalg.inv(p_nearest)
+                    # 4. Adjust target contact positions according to new object pose
+                    # Logic from grasp_rrt_expand.py
+                    # target_pos_homog = torch.cat([target_pos, torch.ones((len(target_pos), 1))], dim=1) # [N, 4]
+                    # target_pos_homog = (torch.linalg.pinv(p_nn) @ target_pos_homog.T).T # [N, 4]
+                    # target_pos_interp = (p_interp @ target_pos_homog.T).T[:, :3].numpy()
                     
-                    target_pos_homog = np.concatenate([target_pos, np.ones((len(target_pos), 1))], axis=1) # [N, 4]
-                    target_pos_obj = (T_obj_robot_nearest @ target_pos_homog.T).T # [N, 4]
+                    # Using the exact logic from grasp_rrt_expand.py (adapted for single batch)
+                    # target_pos: [n_contact, 3]
+                    n_contact = target_pos.shape[0]
+                    target_pos_homog = torch.cat([target_pos, torch.ones((n_contact, 1))], dim=1) # [n_contact, 4]
                     
-                    # Transform from Object Frame to Robot Frame (at p_interp)
-                    # P_robot_interp = T_robot_obj_interp @ P_obj
-                    target_pos_interp_robot = (p_interp @ target_pos_obj.T).T[:, :3]
+                    p_nn_inv = torch.linalg.inv(p_nn) # [4, 4]
+                    # [4, 4] @ [n_contact, 4].T -> [4, n_contact] -> .T -> [n_contact, 4]
+                    target_pos_obj = (p_nn_inv @ target_pos_homog.T).T
                     
-                    # Now visualize these points. They are in Robot Frame.
-                    # But we want to visualize them in World Frame?
-                    # Or relative to /root_interp?
-                    # If we add them to /root_interp, they are in Robot Frame.
-                    
+                    # [4, 4] @ [n_contact, 4].T -> [4, n_contact] -> .T -> [n_contact, 4]
+                    target_pos_interp_homog = (p_interp @ target_pos_obj.T).T
+                    target_pos_interp = target_pos_interp_homog[:, :3].numpy()
+
                     server.scene.add_point_cloud(
                         name="/root_interp/target_pos",
-                        points=target_pos_interp_robot,
-                        colors=np.array([[1.0, 0.0, 0.0]] * len(target_pos_interp_robot)),
+                        points=target_pos_interp,
+                        colors=np.array([[1.0, 0.0, 0.0]] * len(target_pos_interp)),
                         point_size=0.005
                     )
+
+                    if 'target_normal' in sample:
+                        target_normal = sample['target_normal']
+                        if not isinstance(target_normal, torch.Tensor):
+                            target_normal = torch.tensor(target_normal)
+                        target_normal = target_normal.detach().cpu() # [N, 3]
+                        
+                        # 5. Adjust target normals: N_interp = R_interp @ R_nearest^T @ N_nearest
+                        # Logic from grasp_rrt_expand.py
+                        R_nn = p_nn[:3, :3] # [3, 3]
+                        R_interp = p_interp[:3, :3] # [3, 3]
+                        
+                        R_nn_T = R_nn.T # [3, 3]
+                        R_rel = R_interp @ R_nn_T # [3, 3]
+                        
+                        # [3, 3] @ [n_contact, 3].T -> [3, n_contact] -> .T -> [n_contact, 3]
+                        target_normal_interp = (R_rel @ target_normal.T).T.numpy()
+                        
+                        # Create lines for normals
+                        scale = 0.03
+                        lines = []
+                        for pos, normal in zip(target_pos_interp, target_normal_interp):
+                            lines.append([pos, pos + normal * scale])
+                        lines = np.array(lines)
+
+                        server.scene.add_line_segments(
+                            name="/root_interp/target_normal",
+                            points=lines,
+                            colors=(0.0, 1.0, 0.0),
+                            line_width=2.0
+                        )
                     
                     # Also visualize contact_pos (on robot links)
                     # These move with the robot q automatically if we attach them to links?
@@ -294,6 +329,9 @@ def main():
         
         # 3. Interpolate (at current slider value)
         # t = interp_slider.value
+        # Use interpolate_state_tau for single point interpolation if needed, 
+        # but here we want the path for slider.
+        # interpolate_state now uses interpolate_state_tau internally.
         q_path, p_path = interpolate_state(q_nn, p_nn, q_rand, p_rand, num_steps=100)
         state_path = (q_path, p_path)
         

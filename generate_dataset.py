@@ -33,8 +33,8 @@ def get_args():
     parser.add_argument('--robot', type=str, default="leap", help='Robot Name')
     parser.add_argument('--batch_size_outer', type=int, default=128, help='Outer batch size (Object Pose)')
     parser.add_argument('--batch_size_inner', type=int, default=128, help='Inner batch size (Contact Domain Variants)')
-    parser.add_argument('--n_batches', type=int, default=2, help='Number of batches to run')
-    parser.add_argument('--n_grasps', type=int, default=-1, help='Total number of grasps to generate (overrides n_batches if > 0)')
+    parser.add_argument('--n_batches', type=int, default=1, help='Number of batches to run')
+    parser.add_argument('--n_grasps', type=int, default=1, help='Total number of grasps to generate (overrides n_batches if > 0)')
     parser.add_argument('--n_contact', type=int, default=3, help='Number of non-static contacts to optimize')
     parser.add_argument('--n_sample_point', type=int, default=2048, help='Number of sampled object points')
     parser.add_argument('--ik_finetune_iter', type=int, default=5, help='Number of IK finetune iterations')
@@ -313,6 +313,13 @@ def main(args):
         for k, v_list in all_results_dict.items():
             final_results[k] = np.concatenate(v_list, axis=0)
             
+        # Truncate if needed
+        if total_grasps_needed is not None and total_grasps_generated > total_grasps_needed:
+            print(f"Truncating dataset from {total_grasps_generated} to {total_grasps_needed} grasps.")
+            for k in final_results:
+                final_results[k] = final_results[k][:total_grasps_needed]
+            total_grasps_generated = total_grasps_needed
+
         ds_grasps = Dataset.from_dict(final_results)
         ds_grasps.save_to_disk(args.output_dir)
         

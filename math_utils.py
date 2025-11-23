@@ -1731,40 +1731,88 @@ def pose_in_A_to_pose_in_B(pose_in_A: torch.Tensor, pose_A_in_B: torch.Tensor) -
     return torch.matmul(pose_A_in_B, pose_in_A)
 
 
-def quat_slerp(q1: torch.Tensor, q2: torch.Tensor, tau: float) -> torch.Tensor:
-    """Performs spherical linear interpolation (SLERP) between two quaternions.
+# def quat_slerp(q1: torch.Tensor, q2: torch.Tensor, tau: float) -> torch.Tensor:
+#     """Performs spherical linear interpolation (SLERP) between two quaternions.
 
-    This function does not support batch processing.
+#     This function does not support batch processing.
 
-    Args:
-        q1: First quaternion in (w, x, y, z) format.
-        q2: Second quaternion in (w, x, y, z) format.
-        tau: Interpolation coefficient between 0 (q1) and 1 (q2).
+#     Args:
+#         q1: First quaternion in (w, x, y, z) format.
+#         q2: Second quaternion in (w, x, y, z) format.
+#         tau: Interpolation coefficient between 0 (q1) and 1 (q2).
 
-    Returns:
-        Interpolated quaternion in (w, x, y, z) format.
+#     Returns:
+#         Interpolated quaternion in (w, x, y, z) format.
+#     """
+#     assert isinstance(q1, torch.Tensor), "Input must be a torch tensor"
+#     assert isinstance(q2, torch.Tensor), "Input must be a torch tensor"
+#     if tau == 0.0:
+#         return q1
+#     elif tau == 1.0:
+#         return q2
+#     d = torch.dot(q1, q2)
+#     if abs(abs(d) - 1.0) < torch.finfo(q1.dtype).eps * 4.0:
+#         return q1
+#     if d < 0.0:
+#         # Invert rotation
+#         d = -d
+#         q2 *= -1.0
+#     angle = torch.acos(torch.clamp(d, -1, 1))
+#     if abs(angle) < torch.finfo(q1.dtype).eps * 4.0:
+#         return q1
+#     isin = 1.0 / torch.sin(angle)
+#     q1 = q1 * torch.sin((1.0 - tau) * angle) * isin
+#     q2 = q2 * torch.sin(tau * angle) * isin
+#     q1 = q1 + q2
+#     return q1
+
+# ---------------------------------------------------------
+# Batched version: q1,q2: (...,4), tau: (...), broadcastable
+# ---------------------------------------------------------
+def quat_slerp(q1: torch.Tensor, q2: torch.Tensor, tau) -> torch.Tensor:
     """
-    assert isinstance(q1, torch.Tensor), "Input must be a torch tensor"
-    assert isinstance(q2, torch.Tensor), "Input must be a torch tensor"
-    if tau == 0.0:
-        return q1
-    elif tau == 1.0:
-        return q2
-    d = torch.dot(q1, q2)
-    if abs(abs(d) - 1.0) < torch.finfo(q1.dtype).eps * 4.0:
-        return q1
-    if d < 0.0:
-        # Invert rotation
-        d = -d
-        q2 *= -1.0
-    angle = torch.acos(torch.clamp(d, -1, 1))
-    if abs(angle) < torch.finfo(q1.dtype).eps * 4.0:
-        return q1
-    isin = 1.0 / torch.sin(angle)
-    q1 = q1 * torch.sin((1.0 - tau) * angle) * isin
-    q2 = q2 * torch.sin(tau * angle) * isin
-    q1 = q1 + q2
-    return q1
+    Batched SLERP. Accepts (...,4) quaternions and broadcastable tau (...).
+    Returns (...,4).
+    """
+    assert q1.shape[-1] == 4
+    assert q2.shape[-1] == 4
+
+    # Convert tau → tensor
+    if not isinstance(tau, torch.Tensor):
+        tau = torch.tensor(tau, dtype=q1.dtype, device=q1.device)
+
+    # Broadcast tau to (...,1)
+    tau = tau.unsqueeze(-1)  # works for scalar and tensor
+
+    # Dot product over last dim
+    d = (q1 * q2).sum(dim=-1, keepdim=True)
+
+    # Handle near-equal quaternions → return q1
+    eps = torch.finfo(q1.dtype).eps * 4.0
+    close_mask = (abs(abs(d) - 1.0) < eps)
+
+    # Flip q2 when needed
+    flip_mask = d < 0
+    q2_flipped = torch.where(flip_mask, -q2, q2)
+    d = torch.where(flip_mask, -d, d)
+
+    # Angle
+    angle = torch.acos(torch.clamp(d, -1.0, 1.0))  # (...,1)
+
+    # Very small angle → return q1
+    small_angle_mask = (angle.abs() < eps)
+
+    # Slerp
+    sin_angle = torch.sin(angle)
+    isin = 1.0 / sin_angle
+    part1 = q1 * torch.sin((1.0 - tau) * angle) * isin
+    part2 = q2_flipped * torch.sin(tau * angle) * isin
+    q = part1 + part2
+
+    # Apply masks: if close or small angle, return q1
+    q = torch.where(close_mask | small_angle_mask, q1, q)
+
+    return q
 
 
 def interpolate_rotations(R1: torch.Tensor, R2: torch.Tensor, num_steps: int, axis_angle: bool = True) -> torch.Tensor:
