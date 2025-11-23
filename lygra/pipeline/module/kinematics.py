@@ -13,8 +13,7 @@ from tqdm import tqdm
 
 def batch_ik(
     tree,
-    contact_ids,             # [batch, n_contact]
-    contact_parent_ids, 
+    contact_link_ids,
     contact_pos_in_linkf,    # [batch, n_contact, 3]
     contact_normal_in_linkf, # [batch, n_contact, 3]
     target_contact_pos,      # [batch, n_contact, 3]
@@ -30,8 +29,7 @@ def batch_ik(
     filter=True,
     q_init=None,
 ):
-    batch_size = contact_ids.shape[0]
-    contact_link_ids = contact_parent_ids[contact_ids]  # [batch, n_contact]
+    batch_size = contact_link_ids.shape[0]
 
     ik_result = batch_contact_ik(
         tree,
@@ -89,7 +87,6 @@ def batch_contact_adjustment(
     mesh,
     q_init,
     q_mask,
-    contact_ids,
     contact_link_ids,        # [batch, n_contact]
     contact_pos_in_linkf,    # [batch, n_contact, 3]
     contact_normal_in_linkf, # [batch, n_contact, 3]
@@ -105,7 +102,7 @@ def batch_contact_adjustment(
     ik_step_size=0.4,
     ik_regularization=2e-4
 ):
-    batch_size = contact_ids.shape[0]
+    batch_size = contact_link_ids.shape[0]
 
     if batch_size == 0:
         print("No solution found.")
