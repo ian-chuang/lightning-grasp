@@ -103,9 +103,6 @@ def main():
     # Data
     lygra_robot = None
     
-    # Queries
-    queries = [] # List of (q, p)
-    
     # Current State
     current_query_idx = 0
     current_nn_rank = 0
@@ -114,15 +111,14 @@ def main():
     current_sorted_dists = None
     
     # GUI elements
-    with server.gui.add_folder("Query Selection"):
+    with server.gui.add_folder("Source Selection"):
         query_slider = server.gui.add_slider(
-            "Query Index",
+            "Dataset Index (Source)",
             min=0,
-            max=args.num_queries - 1,
+            max=len(dataset) - 1,
             step=1,
             initial_value=0,
         )
-        new_queries_btn = server.gui.add_button("Regenerate Random Queries")
 
     with server.gui.add_folder("NN Search"):
         downsample_slider = server.gui.add_slider(
@@ -153,8 +149,8 @@ def main():
         )
 
     with server.gui.add_folder("Visualization Options"):
-        show_query = server.gui.add_checkbox("Show Query (Ghost)", True)
-        show_nn = server.gui.add_checkbox("Show NN (Base)", True)
+        show_query = server.gui.add_checkbox("Show Source (Ghost)", True)
+        show_nn = server.gui.add_checkbox("Show Neighbor (Solid)", True)
         show_interp = server.gui.add_checkbox("Show Interpolated", True)
         show_contacts = server.gui.add_checkbox("Show Contacts", True)
 
@@ -193,22 +189,11 @@ def main():
                 
                 current_mesh_path = mesh_path
 
-    def generate_queries():
-        nonlocal queries
-        if lygra_robot is None: return
-        print(f"Generating {args.num_queries} random queries...")
-        q_rand = sample_random_q(lygra_robot, batch_size=args.num_queries)
-        p_rand = sample_random_object_pose(lygra_robot, batch_size=args.num_queries)
-        queries = []
-        for i in range(args.num_queries):
-            queries.append((q_rand[i], p_rand[i]))
-        print("Queries generated.")
-
     def update_nn_search():
         nonlocal current_sorted_indices, current_sorted_dists
-        if not queries: return
         
-        q_query, p_query = queries[current_query_idx]
+        q_source = dataset_q[current_query_idx]
+        p_source = dataset_p[current_query_idx]
         
         # Downsample dataset
         N = len(dataset)
@@ -219,7 +204,7 @@ def main():
         ds_p = dataset_p[indices]
         
         # Rank NNs
-        sorted_idx_local, sorted_dists = rank_nearest_neighbors(q_query, p_query, ds_q, ds_p)
+        sorted_idx_local, sorted_dists = rank_nearest_neighbors(q_source, p_source, ds_q, ds_p)
         
         # Map back to original dataset indices
         current_sorted_indices = indices[sorted_idx_local.cpu().numpy()]
@@ -231,16 +216,17 @@ def main():
             nn_rank_slider.value = sample_size - 1
 
     def update_visualization():
-        if not queries or current_sorted_indices is None: return
+        if current_sorted_indices is None: return
         
         # Visibility
         root_query.visible = show_query.value
         root_nn.visible = show_nn.value
         root_interp.visible = show_interp.value
         
-        # 1. Query State
-        q_query, p_query = queries[current_query_idx]
-        update_pose(urdf_query, obj_query, q_query, p_query)
+        # 1. Source State
+        q_source = dataset_q[current_query_idx]
+        p_source = dataset_p[current_query_idx]
+        update_pose(urdf_query, obj_query, q_source, p_source)
         
         # 2. NN State
         rank = int(nn_rank_slider.value)
@@ -256,7 +242,8 @@ def main():
         
         # 3. Interpolated State
         t = interp_slider.value
-        q_interp, p_interp = interpolate_state_tau(q_nn, p_nn, q_query, p_query, tau=t)
+        # Interpolate from Source (t=0) to Neighbor (t=1)
+        q_interp, p_interp = interpolate_state_tau(q_source, p_source, q_nn, p_nn, tau=t)
         update_pose(urdf_interp, obj_interp, q_interp, p_interp)
         
         # 4. Contacts (Interpolated)
@@ -337,12 +324,6 @@ def main():
         update_nn_search()
         update_visualization()
         
-    @new_queries_btn.on_click
-    def _(_):
-        generate_queries()
-        update_nn_search()
-        update_visualization()
-        
     @downsample_slider.on_update
     def _(_):
         nonlocal current_downsample_size
@@ -370,7 +351,6 @@ def main():
     # Initial Setup
     if len(dataset) > 0:
         load_robot_and_object(args.robot, args.object_mesh_path)
-        generate_queries()
         update_nn_search()
         update_visualization()
 

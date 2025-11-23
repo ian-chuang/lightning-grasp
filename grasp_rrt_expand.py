@@ -284,7 +284,7 @@ def main(args):
     batch_count = 0
     total_grasps_generated = len(dataset)
 
-    with tqdm(total=total_grasps_needed if total_grasps_needed else args.n_batches, unit="grasps" if total_grasps_needed else "batches") as pbar:
+    with tqdm(total=total_grasps_needed - total_grasps_generated if total_grasps_needed else args.n_batches, unit="grasps" if total_grasps_needed else "batches") as pbar:
         while True:
             if total_grasps_needed is not None and total_grasps_generated >= total_grasps_needed:
                 break
@@ -332,22 +332,7 @@ def main(args):
     # -----------------
     # Save Dataset
     # -----------------
-    if total_grasps_generated > 0:
-        # Truncate if needed (assuming we want to add exactly n_grasps new grasps)
-        # But wait, dataset contains (Original + New).
-        # If we want to truncate the *new* grasps to exactly total_grasps_needed.
-        # We need to know the original size.
-        # However, the user request is "dataset will contain exactly n_grasps amount".
-        # This is ambiguous. But given generate_dataset behavior (total size = n_grasps),
-        # and grasp_rrt_expand behavior (append), maybe they want the *added* amount to be exactly n_grasps?
-        # Or maybe they want the final file to have exactly n_grasps?
-        # If I run expand with n_grasps=1000, I probably want 1000 new grasps.
-        # So I should truncate the dataset to (original_size + n_grasps).
-        
-        # But I don't have original_size easily available here without re-reading or storing it.
-        # Actually I can just use len(dataset) - total_grasps_generated to get original size?
-        # No, total_grasps_generated tracks what we added.
-        
+    if total_grasps_generated > 0:        
         if total_grasps_needed is not None and total_grasps_generated > total_grasps_needed:
              print(f"Truncating generated grasps from {total_grasps_generated} to {total_grasps_needed}.")
              # We want to keep (len(dataset) - total_grasps_generated) + total_grasps_needed
