@@ -28,37 +28,6 @@ from lygra.pipeline.module.contact_optimization import search_contact_point
 from lygra.pipeline.module.kinematics import batch_ik, batch_contact_adjustment
 from lygra.pipeline.module.postprocess import batch_assign_free_finger_and_filter
 
-
-"""
-how to randomly sample q
-
-if single_update_mode:
-    # in single update mode, we only update q once.
-    # this mode is used for fine-grained contact adjustment.
-    n_retry = 1 
-    # max_iter = 1
-
-batch_size = target_pos.size(0)
-device = target_pos.device
-n_dof = tree.n_dof()
-n_link = tree.n_link()
-n_contact = contact_link_ids.shape[1]
-
-t = time.time()
-joint_limit_lower, joint_limit_upper = tree.get_active_joint_limit()
-# print("lower", joint_limit_lower)
-# print("upper", joint_limit_upper)
-
-joint_limit_lower = torch.from_numpy(joint_limit_lower).to(device)
-joint_limit_upper = torch.from_numpy(joint_limit_upper).to(device)
-
-if single_update_mode:
-    q = q_init.unsqueeze(1)
-else:
-    q = torch.rand(batch_size, n_retry, n_dof).to(device) * (joint_limit_upper - joint_limit_lower) + joint_limit_lower
-"""
-
-
 def get_args():
     parser = argparse.ArgumentParser(description="Grasp Dataset Generation Script")
     parser.add_argument('--robot', type=str, default="leap", help='Robot Name')
@@ -280,7 +249,9 @@ def main(args):
     # -----------------
     # Generation Loop
     # -----------------
-    all_results = []
+    all_results_dict = {}
+    all_contact_ids = []
+    all_metadata = []
     
     if args.n_grasps > 0:
         total_grasps_needed = args.n_grasps
@@ -290,9 +261,11 @@ def main(args):
         print(f"Starting grasp generation for {args.n_batches} batches...")
     
     batch_count = 0
+    total_grasps_generated = 0
+
     with tqdm() as pbar:
         while True:
-            if total_grasps_needed is not None and len(all_results) >= total_grasps_needed:
+            if total_grasps_needed is not None and total_grasps_generated >= total_grasps_needed:
                 break
             if total_grasps_needed is None and batch_count >= args.n_batches:
                 break
@@ -304,64 +277,81 @@ def main(args):
             )
             
             # Convert tensors to numpy for storage
-            batch_data = {}
-            n_items = 0
+            batch_size = 0
             for k, v in result.items():
                 if isinstance(v, torch.Tensor):
-                    batch_data[k] = v.cpu().numpy()
-                    n_items = len(batch_data[k])
-                else:
-                    # Handle non-tensor data if any, though result usually contains tensors
-                    pass
+                    val = v.cpu().numpy()
+                    if k not in all_results_dict:
+                        all_results_dict[k] = []
+                    all_results_dict[k].append(val)
+                    batch_size = len(val)
             
-            if n_items > 0:
-                # Convert dict of arrays to list of dicts
-                keys = list(batch_data.keys())
-                for idx in range(n_items):
-                    if total_grasps_needed is not None and len(all_results) >= total_grasps_needed:
-                        break
-                    item = {key: batch_data[key][idx] for key in keys}
-                    item['contact_ids'] = contact_ids.cpu().numpy()
-                    item['batch_index'] = batch_count
-                    item['mesh_path'] = args.object_mesh_path
-                    item['robot_name'] = args.robot
-                    all_results.append(item)
+            if batch_size > 0:
+                total_grasps_generated += batch_size
+                
+                # Add batch_index to result
+                batch_indices = np.full((batch_size,), batch_count, dtype=np.int32)
+                if 'batch_index' not in all_results_dict:
+                    all_results_dict['batch_index'] = []
+                all_results_dict['batch_index'].append(batch_indices)
+
+                # Store contact_ids for this batch
+                all_contact_ids.append({
+                    'batch_index': batch_count,
+                    'contact_ids': contact_ids.cpu().numpy()
+                })
+                
+                # Store metadata for this batch
+                all_metadata.append({
+                    'batch_index': batch_count,
+                    'mesh_path': args.object_mesh_path,
+                    'robot_name': args.robot
+                })
             
             batch_count += 1
             pbar.update(1)
             if total_grasps_needed is None:
                 pbar.set_description(f"Batch {batch_count}/{args.n_batches}")
             else:
-                pbar.set_description(f"Batch {batch_count} (total grasps: {len(all_results)}/{total_grasps_needed})")
+                pbar.set_description(f"Batch {batch_count} (total grasps: {total_grasps_generated}/{total_grasps_needed})")
 
-    print(f"Generated {len(all_results)} valid grasps.")
+    print(f"Generated {total_grasps_generated} valid grasps.")
 
     # -----------------
     # Save Dataset
     # -----------------
-    if len(all_results) > 0:
+    if total_grasps_generated > 0:
         os.makedirs(args.output_dir, exist_ok=True)
         
-        # Convert numpy arrays to lists for compatibility
-        for item in all_results:
-            for k, v in item.items():
-                if isinstance(v, np.ndarray):
-                    item[k] = v.tolist()
+        # 1. Grasps Dataset (Result Data + Batch Index)
+        # Concatenate all batches
+        final_results = {}
+        for k, v_list in all_results_dict.items():
+            final_results[k] = np.concatenate(v_list, axis=0)
+            
+        ds_grasps = Dataset.from_dict(final_results)
+        output_file_grasps = os.path.join(args.output_dir, f"grasps_{args.robot}.parquet")
+        print(f"Saving grasps dataset to {output_file_grasps}...")
+        ds_grasps.to_parquet(output_file_grasps)
 
-        # Create Hugging Face Dataset directly from list of dicts
-        ds = Dataset.from_list(all_results)
-        
-        # Save to disk (Arrow format) which is native to datasets
-        # This preserves types better than parquet sometimes, but parquet is also fine.
-        # Let's save as parquet for portability as requested before, but also support push_to_hub
-        
-        output_file = os.path.join(args.output_dir, f"grasps_{args.robot}.parquet")
-        print(f"Saving dataset to {output_file}...")
-        ds.to_parquet(output_file)
+        # 2. Contact IDs Dataset
+        ds_contact_ids = Dataset.from_list(all_contact_ids)
+        output_file_contact = os.path.join(args.output_dir, f"contact_ids_{args.robot}.parquet")
+        print(f"Saving contact_ids dataset to {output_file_contact}...")
+        ds_contact_ids.to_parquet(output_file_contact)
+
+        # 3. Metadata Dataset
+        ds_metadata = Dataset.from_list(all_metadata)
+        output_file_meta = os.path.join(args.output_dir, f"metadata_{args.robot}.parquet")
+        print(f"Saving metadata dataset to {output_file_meta}...")
+        ds_metadata.to_parquet(output_file_meta)
         
         if args.push_to_hub:
             print(f"Pushing dataset to Hugging Face Hub: {args.push_to_hub}...")
-            ds.push_to_hub(args.push_to_hub)
+            # Push as separate configurations to allow different schemas
+            ds_grasps.push_to_hub(args.push_to_hub, config_name="default", split="train")
+            ds_contact_ids.push_to_hub(args.push_to_hub, config_name="contact_ids", split="train")
+            ds_metadata.push_to_hub(args.push_to_hub, config_name="metadata", split="train")
             
         print("Done.")
     else:
