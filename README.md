@@ -33,8 +33,12 @@ Not sure if you are tired of setting up a new heavy-weight environment for every
 
 If you prefer a minimal setup and already have Python 3.8/3.9 and pytorch installed:
 ```
-pip install open3d==0.19.0 urdfpy==0.0.22 trimesh==4.9.0
-pip install networkx==3.2.1
+uv venv -p 3.9
+source .venv/bin/activate
+uv pip install torch 
+uv pip install open3d==0.19.0 urdfpy==0.0.22 trimesh==4.9.0
+uv pip install networkx==3.2.1
+uv pip install datasets
 ```
 Done. (Do not merge these pip install into one line)
 
