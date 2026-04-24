@@ -266,7 +266,12 @@ def main(args):
     )
 
     # dataset to sample nearest neighbor from
-    dataset = load_dataset(args.dataset_path, split="train")
+    # if args.dataset_path is a local path, then use load_from_disk, otherwise use load_dataset
+    if os.path.exists(args.dataset_path):
+        print(f"Loading dataset from local path: {args.dataset_path}...")
+        dataset = Dataset.load_from_disk(args.dataset_path)
+    else:
+        dataset = load_dataset(args.dataset_path, split="train")
     dataset = dataset.with_format("torch")
     dataset_keys = dataset.column_names
 
