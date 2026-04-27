@@ -10,7 +10,7 @@ import numpy as np
 class Leap(RobotInterface):
     def get_canonical_space(self):
         box_min = np.array([ 0.06, -0.04, 0.02], dtype=np.float32)
-        box_max = np.array([0.16, 0.04, 0.17], dtype=np.float32)
+        box_max = np.array([0.16, 0.04, 0.15], dtype=np.float32)
         return box_min, box_max 
 
     def get_default_urdf_path(self):
