@@ -5,7 +5,7 @@ box_max = np.array([0.14, 0.03, 0.13], dtype=np.float32)
 
 original
 box_min = np.array([ 0.08, -0.03, 0.08], dtype=np.float32)
-        box_max = np.array([0.12, 0.03, 0.13], dtype=np.float32)
+box_max = np.array([0.12, 0.03, 0.13], dtype=np.float32)
         
 
 bigger
