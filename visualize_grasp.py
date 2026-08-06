@@ -37,7 +37,7 @@ def load_grasp_dataset(data_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize grasps with Viser")
-    parser.add_argument('--dataset_path', type=str, default="iantc104/leap_hand_grasp_cube", help='Path to the generated dataset file (parquet) or HF Hub ID')
+    parser.add_argument('--dataset_path', type=str, default="iantc104/leap_hand_grasp_dataset_rrt_cube_40mm_fixed", help='Path to the generated dataset file (parquet) or HF Hub ID')
     parser.add_argument('--robot', type=str, default="leap", help='Robot Name')
     parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host for Viser server')

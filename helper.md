@@ -66,6 +66,23 @@ uv run python grasp_rrt_expand.py \
 --output_dir ./outputs/leap_hand_grasp_dataset_rrt_wineglass_v4 \
 --push_to_hub iantc104/leap_hand_grasp_dataset_rrt_wineglass_v4
 
+
+# rubber duck
+uv run python generate_dataset.py \
+--robot leap \
+--object_mesh_path objects/rubber_duck_m.stl \
+--n_grasps=100000 \
+--output_dir ./outputs/leap_hand_grasp_dataset_rubber_duck_v4 \
+--push_to_hub iantc104/leap_hand_grasp_dataset_rubber_duck_v4 
+
+uv run python grasp_rrt_expand.py \
+--robot leap \
+--object_mesh_path objects/rubber_duck_m.stl \
+--n_grasps=500000 \
+--dataset_path ./outputs/leap_hand_grasp_dataset_rubber_duck_v4 \
+--output_dir ./outputs/leap_hand_grasp_dataset_rrt_rubber_duck_v4 \
+--push_to_hub iantc104/leap_hand_grasp_dataset_rrt_rubber_duck_v4 
+
 ```
 
 
@@ -91,4 +108,34 @@ uv run python visualize_grasp.py \
 --robot leap \
 --object_mesh_path objects/wineglass_m.stl \
 --dataset_path ./outputs/leap_hand_grasp_dataset_rrt_wineglass_v4
+
+
+uv run python visualize_grasp.py \
+--robot leap \
+--object_mesh_path objects/rubber_duck_m.stl \
+--dataset_path ./outputs/leap_hand_grasp_dataset_rrt_rubber_duck_v4
+
 ```
+
+
+
+```bash
+uv run python generate_dataset.py \
+--robot leap \
+--object_mesh_path objects/cube_40mm_m.stl \
+--n_grasps=10000 \
+--output_dir ./outputs/leap_hand_grasp_dataset_cube_40mm_fixed \
+--push_to_hub iantc104/leap_hand_grasp_dataset_cube_40mm_fixed 
+
+uv run python grasp_rrt_expand.py \
+--robot leap \
+--object_mesh_path objects/cube_40mm_m.stl \
+--n_grasps=30000 \
+--dataset_path ./outputs/leap_hand_grasp_dataset_cube_40mm_fixed \
+--output_dir ./outputs/leap_hand_grasp_dataset_rrt_cube_40mm_fixed \
+--push_to_hub iantc104/leap_hand_grasp_dataset_rrt_cube_40mm_fixed 
+
+
+
+
+```     
