@@ -8,6 +8,7 @@ from lygra.robot.allegro import Allegro
 from lygra.robot.shadow import Shadow
 from lygra.robot.leap import Leap
 from lygra.robot.dclaw import DClaw
+from lygra.robot.hsl_leap import HSLLeap
 
 
 def build_robot(name, urdf_path=None):
@@ -16,7 +17,10 @@ def build_robot(name, urdf_path=None):
     
     elif name == 'leap':
         return Leap(urdf_path=urdf_path)
-    
+
+    elif name == 'hsl_leap':
+        return HSLLeap(urdf_path=urdf_path)
+
     elif name == 'shadow':
         return Shadow(urdf_path=urdf_path)
 

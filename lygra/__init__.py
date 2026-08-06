@@ -1,8 +1,16 @@
 from pathlib import Path
 import importlib.util
-import torch 
-import torch.nn.functional as F 
-import time 
+import torch
+import torch.nn.functional as F
+import time
+import numpy as np
+
+# urdfpy still uses the numpy scalar aliases that were removed in numpy>=1.24.
+# It only hits them when a URDF declares <material><color/></material>, which is
+# why the bundled URDFs load fine but hand-authored ones can crash on import.
+for _alias, _builtin in (("float", float), ("int", int), ("bool", bool)):
+    if not hasattr(np, _alias):
+        setattr(np, _alias, _builtin)
 
 def load_gem_module():
     current_folder = Path(__file__).resolve().parent
