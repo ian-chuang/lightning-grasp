@@ -1,19 +1,3 @@
-smaller
-box_min = np.array([ 0.08, -0.03, 0.06], dtype=np.float32)
-box_max = np.array([0.14, 0.03, 0.13], dtype=np.float32)
-
-
-original
-box_min = np.array([ 0.08, -0.03, 0.08], dtype=np.float32)
-box_max = np.array([0.12, 0.03, 0.13], dtype=np.float32)
-        
-
-bigger
-
- box_min = np.array([ 0.06, -0.04, 0.02], dtype=np.float32)
-        box_max = np.array([0.16, 0.04, 0.15], dtype=np.float32)
-       
-
 <center>
 
 # Lightning Grasp
@@ -81,28 +65,105 @@ Download hand and object assts from the [Releases page](https://github.com/zhaoh
 
 
 ## Run
-Run a single forward pass demo with visualization:
-```
-python demo.py --visualize
-```
-This will visualize results on Allegro + YCB Apple setup. 
-![](misc/output.png)
 
-To use other hands and objects, run:
+This fork generates grasp datasets for the **`hsl_leap`** hand
+(`my_assets/hand/hsl_leap/`, root link `palm`). Five scripts, run in this order:
+
+| | |
+|---|---|
+| `viz_contact_field.py` | Inspect the contact patches and canonical space on the posed hand. Do this first — everything downstream inherits these settings. |
+| `generate_dataset.py` | Synthesise grasps from the contact field. |
+| `grasp_rrt_expand.py` | Grow a dataset by RRT expansion from its own rows. |
+| `filter_grasp_dataset.py` | Reject deeply-interpenetrating grasps by penetration depth. |
+| `visualize_grasp.py` | Browse a dataset, or inspect the k-NN / interpolation mechanism. |
+| `plot_object_distribution.py` | Object pose coverage vs the canonical box. |
+
+### Building datasets
+
+`make_datasets.sh` drives generate → expand → filter → plot for any set of objects.
+Object names are the mesh basenames in `my_assets/objects/` with `_m.stl` dropped.
+
+```bash
+./make_datasets.sh --dry-run                 # print every command, run nothing
+./make_datasets.sh                           # all 5 default objects, all 4 stages
+./make_datasets.sh cube_40mm knife           # just these two
+./make_datasets.sh -v v2 -c 3.0 -n 200000    # new version, tighter box, more grasps
+./make_datasets.sh --stages filter,plot      # re-filter datasets that already exist
+./make_datasets.sh --no-push --stages gen -n 2000 cube_40mm   # quick local check
+./make_datasets.sh --help                    # all options and their defaults
 ```
-python demo.py --visualize --robot shadow --object_mesh_path ./assets/object/ycb/042_adjustable_wrench/textured.obj
+
+A stage whose output directory already exists is skipped, so the script is safe to re-run
+after a crash and cheap to extend with a new object. Pass `--force` to redo one. Every
+stage tees to `outputs/logs/`, and a failed object doesn't stop the others.
+
+### One-offs
+
+```bash
+# inspect the hand config -- contact patches and canonical space, live on the posed hand
+uv run python viz_contact_field.py --robot hsl_leap
+
+# browse a dataset, or explore the k-NN / interpolation mechanism (switch modes in the GUI)
+uv run python visualize_grasp.py --robot hsl_leap \
+  --object_mesh_path my_assets/objects/cube_40mm_m.stl \
+  --dataset_path ./outputs/hsl_leap_grasp_cube_40mm_rrt_filtered_v1
+
+# penetration-depth stats and a threshold sweep, writing nothing
+uv run python filter_grasp_dataset.py --robot hsl_leap \
+  --object_mesh_path my_assets/objects/cube_40mm_m.stl \
+  --dataset_path ./outputs/hsl_leap_grasp_cube_40mm_rrt_v1 \
+  --collision_urdf my_assets/hand/hsl_leap/urdf/leap_hand_right_dense_collision.urdf \
+  --dry_run
+
+# object pose coverage vs the canonical box
+uv run python plot_object_distribution.py --robot hsl_leap \
+  --dataset_path ./outputs/hsl_leap_grasp_cube_40mm_rrt_filtered_v1
 ```
-Ensure your object mesh is scaled to meter units before processing. ;)
 
-The supported hands are shown in ``lygrasp/robot/__init__.py``. We provide several examples in the repository. Please refer to the next section to setup your own hands.
+Grasps come out in the `palm` frame with joints in `get_active_joints()` order, which for
+`hsl_leap` is the hand's own URDF order — no pose transform or joint reindexing downstream.
 
-The system includes several tunable parameters to optimize performance for your hardware and use case:
+Object meshes must be in metre units. Supported hands are listed in `lygra/robot/__init__.py`.
 
-- **`--n_contact`**: Controls the number of active contacts to search during grasp optimization
-- **`--batch_size_outer`** & **`--batch_size_inner`**: Adjust these values to maximize GPU utilization
-  - For GPUs with large memory (≥ 12GB), increase both batch sizes for better performance
-  - Start with default values and scale up until memory limits are reached
-  - Some typical setups: (128, 256), (192, 256), (256, 256), (256, 512).
+### Concentrating grasps toward the middle of the canonical space
+
+A wide canonical space makes goal-conditioned "move the object to a goal pose" harder,
+because a random start row and a random goal row can be most of the box apart.
+
+**`--canonical_concentration`** (`-c` on the script) draws each axis from Beta(a, a) rescaled
+to the box instead of uniform. `1.0` is uniform and reproduces the original behaviour exactly;
+higher pulls toward the centre while keeping full support. On the current box
+(half-extents 50/35/41.5 mm):
+
+| a | origin std [mm] | median start→goal | p90 |
+|---|---|---|---|
+| 1.0 | 29 / 20 / 24 | 56 mm | 85 mm |
+| 2.0 (default) | 22 / 16 / 19 | 42 mm | 66 mm |
+| 3.0 | 19 / 13 / 16 | 36 mm | 56 mm |
+
+It has to go on **both** stages, which is why `make_datasets.sh` passes it to each: RRT
+contributes most of the rows and samples the object *origin* in the box directly, while
+generation constrains a contact point instead, so its origins land an object-radius away in
+a random direction.
+
+**`--center_sigma`** (`--center-sigma`) does the same thing post-hoc on an existing dataset,
+keeping a row at `s` box-radii from the centre with probability `exp(-s²/2σ²)`. Useful for
+trying the idea without regenerating — it prints how the start→goal distance moves. It can
+only discard rows, so hard concentration costs dataset size.
+
+Neither touches **orientation**, which stays uniform over SO(3) — for a pose-goal task that is
+half the difficulty. The stronger fix there is on the RL side: the dataset is an RRT graph, so
+rows that are close under `rrt_utils.rank_nearest_neighbors` are reachable from each other by
+construction. Sampling the goal from the start's k-nearest neighbours, with k growing over
+training, shortens each episode without giving up coverage.
+
+### Other tunables
+
+- **`--n_contact`**: number of active contacts to search during grasp optimization
+- **`--batch_size_outer`** & **`--batch_size_inner`**: raise these to fill the GPU.
+  Typical steps: (128, 256), (192, 256), (256, 256), (256, 512).
+- **`--batch_size`** on the filter trades memory for speed; 64 uses ~3 GB at the default
+  8192 object points.
 
 ## Setup Your Model
 There are several examples in ``lygra/robot/`` folder. You can refer to ``lygra/robot/allegro.py`` for an tutorial. Basically, you simply need to setup a config object that specifies the contact field rules (i.e. which patches to use defined by allowed normals), canonical object space (i.e. where to initialize the object), and some URDF metadata. That's it!

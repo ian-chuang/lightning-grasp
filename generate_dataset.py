@@ -41,6 +41,9 @@ def get_args():
     parser.add_argument('--zo_lr_sigma', type=float, default=5, help='Sigma of the Zeroth-order Optimizer')
     parser.add_argument('--cf_accel', type=str, default='lbvhs2', help='Contact Field Acceleration Structure')
     parser.add_argument('--object_pose_sampling_strategy', type=str, default='canonical', help='Object pose sampling strategy')
+    parser.add_argument('--canonical_concentration', type=float, default=1.0,
+                        help='Bias placements toward the centre of the canonical space. '
+                             '1.0 = uniform (unchanged); 2-3 concentrates. Beta(a, a) per axis.')
     parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
     parser.add_argument('--output_dir', type=str, default="./outputs/leap_hand_grasp_cube", help='Directory to save the dataset')
     parser.add_argument('--push_to_hub', type=str, default="iantc104/leap_hand_grasp_cube", help='Hugging Face Hub repository name to push to (e.g., "username/dataset")')
@@ -69,7 +72,9 @@ def generate_grasps(args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_s
             contact_field=contact_field, 
             tree=tree, 
             mesh_data=decomposed_static_mesh_data,
-            sampling_args=get_object_pose_sampling_args(object_pose_sampling_strategy, robot)
+            sampling_args=get_object_pose_sampling_args(
+                object_pose_sampling_strategy, robot, concentration=args.canonical_concentration
+            )
         )
 
         # Contact Field BVH Traversal

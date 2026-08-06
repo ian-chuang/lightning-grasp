@@ -21,28 +21,31 @@ def sample_random_q(robot, batch_size=1):
     q_rand = active_lowers + rand * (active_uppers - active_lowers)
     return q_rand
 
-def sample_random_object_pose(robot, batch_size=1):
+def sample_random_object_pose(robot, batch_size=1, concentration=1.0):
     """
     Sample random object poses (position + orientation).
     Position in canonical space.
+
+    Note the canonical box means something different here than it does in
+    `generate_dataset.py`: there it constrains a *contact point* on the hand and the
+    object origin lands an object-radius away, here it constrains the object origin
+    directly. `concentration` biases that origin toward the box centre; 1.0 is
+    uniform. See `lygra.contact_field.sample_in_box`.
     """
+    from lygra.contact_field import sample_in_box
+
     bmin, bmax = robot.get_canonical_space()
-    bmin_t = torch.tensor(bmin, dtype=torch.float32)
-    bmax_t = torch.tensor(bmax, dtype=torch.float32)
-    
+    positions = torch.from_numpy(
+        sample_in_box(bmin, bmax, batch_size, concentration=concentration)
+    ).float()
+
     poses = []
-    for _ in range(batch_size):
-        # Rotation
-        R = math_utils.generate_random_rotation()
-        
-        # Translation
-        pos = bmin_t + torch.rand(3) * (bmax_t - bmin_t)
-        
+    for i in range(batch_size):
         T = torch.eye(4)
-        T[:3, :3] = R
-        T[:3, 3] = pos
+        T[:3, :3] = math_utils.generate_random_rotation()
+        T[:3, 3] = positions[i]
         poses.append(T)
-    
+
     return torch.stack(poses)
 
 def interpolate_state(q_start, p_start, q_end, p_end, num_steps=10):

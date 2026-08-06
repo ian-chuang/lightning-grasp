@@ -10,15 +10,16 @@ from lygra.utils.geom_utils import get_tangent_plane
 from lygra.pipeline.module.collision import batch_object_hand_collision_check
 
 
-def get_object_pose_sampling_args(strategy, robot):
+def get_object_pose_sampling_args(strategy, robot, concentration=1.0):
     args = {
         "strategy": strategy
     }
 
     if strategy == 'canonical':
         bmin, bmax = robot.get_canonical_space()
-        args['bmin'] = bmin 
+        args['bmin'] = bmin
         args['bmax'] = bmax
+        args['concentration'] = concentration
 
     return args
 

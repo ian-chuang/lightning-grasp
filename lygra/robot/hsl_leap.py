@@ -18,17 +18,23 @@ class HSLLeap(RobotInterface):
        That makes `palm` usable as a static contact link (see below), which is
        not the case for the stock LEAP where the palm hangs off `base`.
 
-    2. Frame convention.  The stock LEAP `base` frame and this `palm` frame are
-       related by  (x, y, z)_palm = (z, -y, x)_base  plus a small offset:
-           fingers extend along  +X  (stock: +Z)
-           fingers curl toward   +Z  (stock: +X, the palm normal)
-           index -> ring runs    +Y  (stock: -Y)
-       The *fingertip link frames* however come out bit-identical in orientation
-       to the stock LEAP fingertip frames, so the per-link normal rules below
-       transfer verbatim -- only the palm-frame quantities had to be remapped.
+    2. Frame convention.  Grasps are emitted in this `palm` frame, so quantities
+       copied from the stock LEAP config had to be remapped. The two hands are
+       related by an exact rigid transform (verified to 0.1 mm over random
+       configurations, on every shared link):
+
+           p_palm = R @ p_base + t,   R = [[0, 0, 1],      t = [-0.04041,
+                                           [0, -1, 0],           0.00466,
+                                           [1, 0,  0]]           0.01128]
+
+       i.e. fingers extend along +X (stock: +Z), curl toward +Z (stock: +X, the
+       palm normal), and index -> ring runs +Y (stock: -Y). Link *orientations*
+       are shared, so per-link normal rules transfer without remapping.
 
     3. Naming.  if/mf/rf/th (index/middle/ring/thumb) with bs/px/md/ds/tip
-       segments, instead of mcp_joint/pip/dip/fingertip.
+       segments, instead of mcp_joint/pip/dip/fingertip. The correspondence is
+       one segment off from what the names suggest: stock `fingertip` is this
+       hand's `*_ds`, and `*_tip` is an extra link carrying the rubber tip cap.
     """
 
     # The stock LEAP config points `static_link` at "base_link", which does not
@@ -40,12 +46,13 @@ class HSLLeap(RobotInterface):
         """
         Region (in the `palm` frame) that object surface points get dragged into.
 
-        This is the stock LEAP box mapped through the frame change above and
-        re-centred on this hand's fingertips, i.e. centre (0.097, 0.019, 0.098)
-        with the same half-extents the stock box had after the axis swap.
+        Hand-tuned with `viz_contact_field.py`. For reference, the stock LEAP box
+        [0.08, -0.03, 0.06] .. [0.14, 0.03, 0.13] pushed through the exact
+        transform above lands at [0.0196, -0.0253, 0.0913] .. [0.0896, 0.0347,
+        0.1513]; this box is deliberately lower and wider in z.
         """
-        box_min = np.array([-0.01, -0.04, 0.05], dtype=np.float32)
-        box_max = np.array([0.10, 0.04, 0.13], dtype=np.float32)
+        box_min = np.array([-0.0, -0.035, 0.047], dtype=np.float32)
+        box_max = np.array([0.1, 0.035, 0.13], dtype=np.float32)
         return box_min, box_max
 
     def get_default_urdf_path(self):
@@ -76,9 +83,10 @@ class HSLLeap(RobotInterface):
         }
 
         # Fingertip links carry the rubber tip mesh as their collision geometry.
-        # Their frames match the stock LEAP fingertip frames exactly, so this is
-        # the same (0, 0, -1) hemisphere cut the stock config uses: it keeps the
-        # half of the tip on the +Z side of the distal joint axis.
+        # In the tip frame, -Y is distal and Z is the distal joint axis, so this
+        # cone drops the patches facing back up the finger and off to one side,
+        # keeping the distal pad. (Stock LEAP instead cuts the whole -Z
+        # hemisphere, which is a purely lateral split.)
         for link in ["if_tip", "mf_tip", "rf_tip", "th_tip"]:
             config["movable_link"][link] = {
                 "disabled_normal": [

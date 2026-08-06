@@ -11,20 +11,15 @@ import os
 import sys
 from tqdm import tqdm
 import pandas as pd
-from datasets import Dataset, load_dataset, concatenate_datasets
+from datasets import Dataset, concatenate_datasets
 
 # Lygra Common
 from lygra.robot import build_robot
-from lygra.contact_set import get_dependency_matrix, get_link_dependency_matrix
 from lygra.kinematics import build_kinematics_tree
-from lygra.mesh import get_urdf_mesh, get_urdf_mesh_decomposed, get_urdf_mesh_for_projection
-from lygra.mesh_analyzer import get_support_point_mask
+from lygra.mesh import get_urdf_mesh_decomposed, get_urdf_mesh_for_projection
+from lygra.utils.dataset_utils import load_grasp_dataset
 from lygra.utils.geom_utils import MeshObject
 from lygra.memory import IKGPUBufferPool
-from lygra.pipeline.module.object_placement import sample_object_pose, get_object_pose_sampling_args
-from lygra.pipeline.module.contact_query import batch_object_all_contact_fields_interaction
-from lygra.pipeline.module.contact_collection import sample_pose_and_contact_from_interaction
-from lygra.pipeline.module.contact_optimization import search_contact_point
 from lygra.pipeline.module.kinematics import batch_ik, batch_contact_adjustment
 from lygra.pipeline.module.postprocess import batch_assign_free_finger_and_filter
 
@@ -34,7 +29,6 @@ from rrt_utils import (
     interpolate_state_tau,
     find_nearest_neighbor,
 )
-import math_utils
 
 def get_args():
     parser = argparse.ArgumentParser(description="Grasp Dataset Generation Script")
@@ -55,6 +49,9 @@ def get_args():
     parser.add_argument('--push_to_hub', type=str, default="iantc104/leap_hand_grasp_cube_rrt", help='Hugging Face Hub repository name to push to (e.g., "username/dataset")')
     parser.add_argument('--nn_downsample_size', type=int, default=2048, help='Number of samples to use for nearest neighbor search')
     parser.add_argument('--rrt_tau', type=float, default=0.2, help='RRT interpolation step size (tau)')
+    parser.add_argument('--canonical_concentration', type=float, default=1.0,
+                        help='Bias the sampled object origin toward the centre of the canonical '
+                             'space. 1.0 = uniform (unchanged); 2-3 concentrates. Beta(a, a) per axis.')
     args = parser.parse_args()
     return args
 
@@ -82,7 +79,9 @@ def generate_grasps(
     with torch.no_grad():
         # 1. Sample Random
         q_rand_batch = sample_random_q(robot, batch_size=args.batch_size).cuda() # (B, n_dof)
-        p_rand_batch = sample_random_object_pose(robot, batch_size=args.batch_size).cuda() # (B, 4, 4)
+        p_rand_batch = sample_random_object_pose(
+            robot, batch_size=args.batch_size, concentration=args.canonical_concentration
+        ).cuda() # (B, 4, 4)
 
         # 2. Find Nearest Neighbor (Batched)
         print("Finding nearest neighbors...")
@@ -198,24 +197,14 @@ def main(args):
         active_joint_names=robot.get_active_joints()
     )
 
-    # Robot Mesh Data
-    mesh_data = get_urdf_mesh(
-        urdf_path=robot.urdf_path,
-        tree=tree,
-        mesh_scale=robot.get_mesh_scale()
-    )
-
+    # Robot Mesh Data.
+    # Note this script never builds the contact field: RRT expansion takes its contacts
+    # from the seed dataset's rows, so the swept field and its BVH (minutes of startup)
+    # would go unused. Only `generate_dataset.py` needs them.
     mesh_data_for_ik = get_urdf_mesh_for_projection(
         urdf_path=robot.urdf_path,
         tree=tree,
         config=robot.get_contact_field_config(),
-        mesh_scale=robot.get_mesh_scale()
-    )
-
-    decomposed_static_mesh_data = get_urdf_mesh_decomposed(
-        urdf_path=robot.urdf_path,
-        tree=tree,
-        override_link_names=robot.get_static_links(),
         mesh_scale=robot.get_mesh_scale()
     )
 
@@ -233,31 +222,13 @@ def main(args):
 
     self_collision_link_pairs = torch.from_numpy(self_collision_link_pairs).cuda().int()
 
-    contact_field = robot.get_contact_field()
-    dependency_sets = tree.get_dependency_sets([robot.get_base_link()])
-
-    contact_parent_links = contact_field.get_all_parent_link_names()
-    contact_parent_ids = [tree.get_link_id(link) for link in contact_parent_links]
-    contact_parent_ids = torch.tensor(contact_parent_ids).cuda()
-
-    dependency_matrix = get_link_dependency_matrix(contact_field, dependency_sets)
-    dependency_matrix = dependency_matrix.cuda()
-
-    # Contact Field Acceleration Data Structure (LBVH-S2Bundle)
-    accel_structure = contact_field.generate_acceleration_structure(method=args.cf_accel)
-
-    # Object Data.
+    # Object Data. Only the full surface point cloud is needed here, for the
+    # object-penetration check in postprocessing.
     object_mesh = MeshObject(args.object_mesh_path)
     points, normals = object_mesh.sample_point_and_normal(count=args.n_sample_point)
     points_all = torch.from_numpy(points).cuda().float()
-    normals_all = torch.from_numpy(normals).cuda().float()
 
-    # Filtering
-    support_point_mask = get_support_point_mask(points_all, normals_all, [0.01])[0]
-    points = points_all[torch.where(support_point_mask)]            # good grasp point.
-    normals = normals_all[torch.where(support_point_mask)]          # good_grasp_point.
-
-    # IK GPU buffer. 
+    # IK GPU buffer.
     gpu_memory_pool = IKGPUBufferPool(
         n_dof=tree.n_dof(), 
         n_link=tree.n_link(), 
@@ -265,14 +236,9 @@ def main(args):
         retry=10
     )
 
-    # dataset to sample nearest neighbor from
-    # if args.dataset_path is a local path, then use load_from_disk, otherwise use load_dataset
-    if os.path.exists(args.dataset_path):
-        print(f"Loading dataset from local path: {args.dataset_path}...")
-        dataset = Dataset.load_from_disk(args.dataset_path)
-    else:
-        dataset = load_dataset(args.dataset_path, split="train")
-    dataset = dataset.with_format("torch")
+    # Seed dataset: nearest neighbours are drawn from it, and the expansion is appended to it.
+    print(f"Loading seed dataset from {args.dataset_path}...")
+    dataset = load_grasp_dataset(args.dataset_path).with_format("torch")
     dataset_keys = dataset.column_names
 
     # -----------------
@@ -309,7 +275,7 @@ def main(args):
             # Convert tensors to numpy for storage
             batch_size = result['q'].shape[0] if 'q' in result else 0
 
-            if batch_size >= 0:
+            if batch_size > 0:
                 n_grasps = min(args.batch_cutoff, batch_size) if args.batch_cutoff > 0 else batch_size
                 # for each dataset.column_names, create HF dataset from result
                 result_np = {k:v[:n_grasps].cpu().numpy() for k,v in result.items() if k in dataset_keys}
@@ -337,22 +303,20 @@ def main(args):
     # -----------------
     # Save Dataset
     # -----------------
-    if total_grasps_generated > 0:        
-        if total_grasps_needed is not None and total_grasps_generated > total_grasps_needed:
-             print(f"Truncating generated grasps from {total_grasps_generated} to {total_grasps_needed}.")
-             # We want to keep (len(dataset) - total_grasps_generated) + total_grasps_needed
-             original_size = len(dataset) - total_grasps_generated
-             final_size = original_size + total_grasps_needed
-             # Dataset slicing in HF datasets
-             dataset = dataset.select(range(final_size))
-             total_grasps_generated = total_grasps_needed
+    if total_grasps_generated > 0:
+        # `total_grasps_generated` counts the whole dataset (it starts at the seed size),
+        # so --n_grasps is the target size of the *output*, seed rows included.
+        if total_grasps_needed is not None and len(dataset) > total_grasps_needed:
+            print(f"Truncating dataset from {len(dataset)} to {total_grasps_needed}.")
+            dataset = dataset.select(range(total_grasps_needed))
+            total_grasps_generated = total_grasps_needed
 
+        # save_to_disk, matching generate_dataset.py, so --output_dir of one stage can be
+        # passed straight to --dataset_path of the next.
         os.makedirs(args.output_dir, exist_ok=True)
-            
-        output_file_grasps = os.path.join(args.output_dir, f"grasps_rrt_{args.robot}.parquet")
-        print(f"Saving grasps dataset to {output_file_grasps}...")
-        dataset.to_parquet(output_file_grasps)
-        
+        print(f"Saving grasps dataset to {args.output_dir}...")
+        dataset.with_format(None).save_to_disk(args.output_dir)
+
         if args.push_to_hub:
             print(f"Pushing dataset to Hugging Face Hub: {args.push_to_hub}...")
             # Push as separate configurations to allow different schemas
