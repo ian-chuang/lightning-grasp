@@ -90,7 +90,8 @@ class HSLLeap(RobotInterface):
         for link in ["if_tip", "mf_tip", "rf_tip", "th_tip"]:
             config["movable_link"][link] = {
                 "disabled_normal": [
-                    (np.array([1.0, 1.0, 0.0]), 1.2)
+                    (np.array([0.0, 1.0, 0.0]), 0.8),
+                    (np.array([1.0, 0.0, 0.0]), 1.2),
                 ]
             }
 
@@ -98,7 +99,7 @@ class HSLLeap(RobotInterface):
         if self.USE_PALM_CONTACT:
             config["static_link"]["palm"] = {
                 "allowed_normal": [
-                    (np.array([[0.0, 0.0, 1.0]]), 3.1415926 * 0.25)
+                    (np.array([[0.0, 0.0, 1.0]]), 0.8)
                 ]
             }
 
