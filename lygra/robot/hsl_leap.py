@@ -52,7 +52,7 @@ class HSLLeap(RobotInterface):
         0.1513]; this box is deliberately lower and wider in z.
         """
         box_min = np.array([-0.0, -0.035, 0.047], dtype=np.float32)
-        box_max = np.array([0.1, 0.035, 0.13], dtype=np.float32)
+        box_max = np.array([0.1, 0.035, 0.145], dtype=np.float32)
         return box_min, box_max
 
     def get_default_urdf_path(self):
