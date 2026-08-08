@@ -20,7 +20,7 @@ set -euo pipefail
 # ---------------------------------------------------------------- defaults
 ROBOT=hsl_leap
 VERSION=v1
-CONCENTRATION=2.0          # 1.0 = uniform over the canonical box; 2-3 concentrates
+CONCENTRATION=1.0          # 1.0 = uniform over the canonical box; 2-3 concentrates
 N_GRASPS=100000            # generate stage
 N_EXPANDED=500000          # RRT stage: TOTAL rows out, seed rows included
 HUB_USER=iantc104          # empty (or --no-push) to keep everything local
@@ -29,13 +29,14 @@ STAGES=gen,rrt,filter,plot
 OBJECT_PENETRATION=0.008   # [m] filter: reject deeper hand-inside-object than this
 SELF_PENETRATION=0.005     # [m] filter: reject deeper hand-inside-hand than this
 CENTER_SIGMA=0             # filter: >0 also thins toward the canonical centre
+DEVICE=cuda                # e.g. cuda:1 to stay off a GPU someone else is using
 
 OBJECTS_DIR=my_assets/objects
 DENSE_URDF=my_assets/hand/hsl_leap/urdf/leap_hand_right_dense_collision.urdf
 OUT_ROOT=./outputs
 LOG_DIR=./outputs/logs
 
-DEFAULT_OBJECTS=(cube_40mm knife lightbulb rubber_duck wineglass_closed)
+DEFAULT_OBJECTS=(wineglass cube_40mm knife lightbulb rubber_duck wineglass_closed)
 
 DRY_RUN=0
 FORCE=0
@@ -57,6 +58,7 @@ Options:
       --object-penetration M    filter threshold, metres           [$OBJECT_PENETRATION]
       --self-penetration M      filter threshold, metres           [$SELF_PENETRATION]
       --center-sigma S          filter: thin toward the centre     [$CENTER_SIGMA]
+  -d, --device DEV              GPU for the filter stage           [$DEVICE]
       --collision-urdf PATH     bone-bridged hand for the filter
       --out-root DIR            where datasets are written         [$OUT_ROOT]
   -f, --force                   redo stages whose output exists
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
         --object-penetration)     OBJECT_PENETRATION=$2; shift 2 ;;
         --self-penetration)       SELF_PENETRATION=$2; shift 2 ;;
         --center-sigma)           CENTER_SIGMA=$2; shift 2 ;;
+        -d|--device)              DEVICE=$2; shift 2 ;;
         --collision-urdf)         DENSE_URDF=$2; shift 2 ;;
         --out-root)               OUT_ROOT=$2; LOG_DIR=$2/logs; shift 2 ;;
         -f|--force)               FORCE=1; shift ;;
@@ -215,6 +218,7 @@ for obj in "${OBJECTS[@]}"; do
                     --collision_urdf "$DENSE_URDF" \
                     --max_object_penetration "$OBJECT_PENETRATION" \
                     --max_self_penetration "$SELF_PENETRATION" \
+                    --device "$DEVICE" \
                     "${CENTER_ARGS[@]}" \
                     --output_dir "$FILTERED" \
                     --push_to_hub "$(hub "${NAME}_rrt_filtered_${VERSION}")" \

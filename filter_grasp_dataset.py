@@ -75,11 +75,15 @@ def get_args():
                         'can only discard rows, never add them.')
     p.add_argument('--n_object_points', type=int, default=8192,
                    help='Object surface points sampled for the object channel')
-    p.add_argument('--batch_size', type=int, default=64, help='Grasps per GPU pass')
+    p.add_argument('--batch_size', type=int, default=256,
+                   help='Grasps per GPU pass. Peak memory scales with batch_size x '
+                        'n_object_points x colliders; drop it if you run out.')
     p.add_argument('--limit', type=int, default=0, help='Only check the first N grasps (0 = all)')
     p.add_argument('--output_dir', type=str, default=None, help='Where to write the filtered dataset')
     p.add_argument('--push_to_hub', type=str, default=None, help='Hub repo id to push the result to')
     p.add_argument('--dry_run', action='store_true', help='Measure and report, write nothing')
+    p.add_argument('--device', type=str, default='cuda',
+                   help='e.g. cuda:1 to keep off a GPU someone else is training on')
     p.add_argument('--seed', type=int, default=0)
     return p.parse_args()
 
@@ -87,14 +91,21 @@ def get_args():
 class ConvexColliders:
     """Every collision geom of a URDF as a convex polytope in half-space form.
 
-    Faces of all geoms are concatenated into one (A, b) so a whole dataset batch can be
-    tested with a single matmul; `face_geom` says which geom each face belongs to.
+    A point p is inside a convex hull iff a_f . p <= b_f for every face f, and its
+    penetration depth is then -max_f(a_f . p - b_f). So the whole test is one matmul
+    per geom against that geom's plane set.
+
+    Planes are stored per geom rather than concatenated: reducing over the faces of one
+    geom at a time is a plain `amax` over the last axis, whereas one concatenated
+    (A, b) would need a segmented reduction whose index tensor is larger than the data.
+    Coplanar hull triangles are deduplicated first (a box hull is 12 triangles but only
+    6 distinct planes), which removes about a third of the work.
     """
 
     def __init__(self, urdf_path, tree, mesh_scale=1.0, device='cuda'):
         robot_mesh = RobotMesh(urdf_path, mesh_scale=mesh_scale)
 
-        A, b, face_geom, link_of_geom, chain_of_geom = [], [], [], [], []
+        planes, link_of_geom, chain_of_geom = [], [], []
         verts, vert_geom = [], []
 
         for link_name in tree.get_all_link_names():
@@ -114,9 +125,7 @@ class ConvexColliders:
 
                 n = hull.face_normals                                     # unit, outward
                 d = (n * hull.vertices[hull.faces[:, 0]]).sum(axis=-1)    # a . p = b on the face
-                A.append(n)
-                b.append(d)
-                face_geom.append(np.full(len(n), geom_id))
+                planes.append(np.unique(np.round(np.c_[n, d], 6), axis=0))
 
                 verts.append(hull.vertices)
                 vert_geom.append(np.full(len(hull.vertices), geom_id))
@@ -124,71 +133,115 @@ class ConvexColliders:
                 link_of_geom.append(link_id)
                 chain_of_geom.append(CHAINS.index(chain))
 
-        t = lambda x, dt: torch.as_tensor(np.concatenate(x), dtype=dt, device=device)
-        self.A = t(A, torch.float32)                    # [F, 3]
-        self.b = t(b, torch.float32)                    # [F]
-        self.face_geom = t(face_geom, torch.long)       # [F]
-        self.verts = t(verts, torch.float32)            # [V, 3]
-        self.vert_geom = t(vert_geom, torch.long)       # [V]
-        self.link_of_geom = torch.as_tensor(link_of_geom, dtype=torch.long, device=device)
-        self.chain_of_geom = torch.as_tensor(chain_of_geom, dtype=torch.long, device=device)
+        as_t = lambda x, dt: torch.as_tensor(x, dtype=dt, device=device)
+        self.verts = as_t(np.concatenate(verts), torch.float32)              # [V, 3]
+        self.vert_geom = as_t(np.concatenate(vert_geom), torch.long)         # [V]
+        self.link_of_geom = as_t(link_of_geom, torch.long)
+        self.chain_of_geom = as_t(chain_of_geom, torch.long)
         self.n_geom = len(link_of_geom)
+        self.n_face = sum(len(p) for p in planes)
         self.device = device
 
-    def world_planes(self, geom_pose):
-        """Push the half-spaces into the base frame.
+        # Bounding sphere per geom, for the broad phase.
+        centers, radii = [], []
+        for p, v in zip(planes, verts):
+            c = (v.min(axis=0) + v.max(axis=0)) / 2
+            centers.append(c)
+            radii.append(np.linalg.norm(v - c, axis=1).max())
+        self.center = as_t(np.array(centers), torch.float32)                 # [G, 3]
+        self.radius = as_t(np.array(radii), torch.float32)                   # [G]
 
-        Transforming ~1400 planes per grasp is far cheaper than transforming tens of
-        thousands of query points into every geom's local frame.
+        # Narrow phase works on a gathered list of (point, geom) candidate pairs, so the
+        # plane sets have to be indexable by geom. Geoms are grouped by face count and
+        # stacked within a group, which keeps that a plain gather with no padding: here
+        # a group is "the 81 boxes" (6 planes each) and "the 4 tip hulls".
+        groups = {}
+        for g, p in enumerate(planes):
+            groups.setdefault(len(p), []).append(g)
+        self.groups = []
+        self.group_of_geom = torch.zeros(self.n_geom, dtype=torch.long, device=device)
+        self.slot_of_geom = torch.zeros(self.n_geom, dtype=torch.long, device=device)
+        for i, (n_face, geoms) in enumerate(sorted(groups.items())):
+            stacked = np.stack([planes[g] for g in geoms])                   # [Gi, F, 4]
+            self.groups.append((as_t(stacked[:, :, :3], torch.float32),
+                                as_t(stacked[:, :, 3], torch.float32)))
+            self.group_of_geom[as_t(geoms, torch.long)] = i
+            self.slot_of_geom[as_t(geoms, torch.long)] = torch.arange(len(geoms), device=device)
 
-        Args:
-            geom_pose: [B, G, 4, 4]
-        Returns:
-            A_w: [B, F, 3], b_w: [B, F]
-        """
-        R = geom_pose[:, self.face_geom, :3, :3]        # [B, F, 3, 3]
-        t = geom_pose[:, self.face_geom, :3, 3]         # [B, F, 3]
-        A_w = torch.einsum('bfij,fj->bfi', R, self.A)
-        b_w = self.b.unsqueeze(0) + (A_w * t).sum(-1)
-        return A_w, b_w
+    def max_depth(self, points, geom_pose, pair_mask=None):
+        """Deepest penetration of any query point into any geom, per batch element.
 
-    def depth(self, points, geom_pose):
-        """Penetration depth of every query point in every geom.
+        Broad phase first: a point can only be inside a geom if it is inside that geom's
+        bounding sphere, and that test is one `cdist` producing [B, N, G] floats instead
+        of the [B, N, F] the plane test would need. It typically rejects ~99% of pairs,
+        and the exact plane test then runs only on the survivors -- which is what makes
+        this tractable, since evaluating every plane against every point is ~5x more work
+        than the entire rest of the pass.
+
+        Exact, not approximate: the sphere strictly contains the hull, so nothing that
+        penetrates can be culled.
 
         Args:
             points:    [B, N, 3] in the hand base frame
             geom_pose: [B, G, 4, 4]
+            pair_mask: [N, G] float, optional. 0 zeroes that (point, geom) pair -- used
+                       to ignore same-chain contacts on the self channel.
         Returns:
-            [B, N, G], 0 outside, distance to the nearest face when inside.
+            [B] metres, 0 where nothing penetrates.
         """
-        A_w, b_w = self.world_planes(geom_pose)
-        s = torch.einsum('bnk,bfk->bnf', points, A_w) - b_w.unsqueeze(1)   # [B, N, F]
+        out = torch.zeros(points.shape[0], device=points.device)
 
-        B, N, _ = s.shape
-        worst = torch.full((B, N, self.n_geom), -torch.inf, device=s.device)
-        worst.scatter_reduce_(
-            2, self.face_geom.view(1, 1, -1).expand(B, N, -1), s, reduce='amax', include_self=True
-        )
-        return worst.neg().clamp_min_(0.0)
+        # --- broad phase
+        center_w = torch.einsum('bgij,gj->bgi', geom_pose[:, :, :3, :3], self.center) \
+            + geom_pose[:, :, :3, 3]                                         # [B, G, 3]
+        near = torch.cdist(points, center_w) < self.radius                   # [B, N, G]
+        if pair_mask is not None:
+            near &= pair_mask.bool()
+        idx = near.nonzero()                                                 # [K, 3] (b, n, g)
+        if idx.numel() == 0:
+            return out
+
+        # --- narrow phase, on candidates only
+        b, n, g = idx[:, 0], idx[:, 1], idx[:, 2]
+        R = geom_pose[b, g, :3, :3]                                          # [K, 3, 3]
+        local = torch.einsum('kij,kj->ki', R.transpose(1, 2),
+                             points[b, n] - geom_pose[b, g, :3, 3])          # [K, 3]
+
+        group = self.group_of_geom[g]
+        slot = self.slot_of_geom[g]
+        for i, (A, offset) in enumerate(self.groups):
+            sel = group == i
+            if not sel.any():
+                continue
+            s = slot[sel]
+            depth = (torch.einsum('kfj,kj->kf', A[s], local[sel]) - offset[s]) \
+                .amax(-1).neg_().clamp_min_(0.0)                             # [K_i]
+            out.scatter_reduce_(0, b[sel], depth, reduce='amax')
+
+        return out
 
 
 def geom_poses(tree, colliders, q):
     return batch_fk(tree, q)["link"][:, colliders.link_of_geom]           # [B, G, 4, 4]
 
 
-def measure(dataset, robot, args, device='cuda'):
+def measure(dataset, robot, args, device=None):
+    device = device or args.device
     """Deepest (object, self) penetration per grasp, in metres."""
     tree = build_kinematics_tree(robot.urdf_path, robot.get_active_joints())
 
     dense_path = args.collision_urdf or robot.urdf_path
     dense = ConvexColliders(dense_path, tree, robot.get_mesh_scale(), device)
     plain = ConvexColliders(robot.urdf_path, tree, robot.get_mesh_scale(), device)
-    print(f"  object channel : {os.path.basename(dense_path)}  ({dense.n_geom} colliders)")
-    print(f"  self   channel : {os.path.basename(robot.urdf_path)}  ({plain.n_geom} colliders)")
+    print(f"  object channel : {os.path.basename(dense_path)}  "
+          f"({dense.n_geom} colliders, {dense.n_face} planes)")
+    print(f"  self   channel : {os.path.basename(robot.urdf_path)}  "
+          f"({plain.n_geom} colliders, {plain.n_face} planes)")
 
     # A vertex only counts against geoms on another chain: inside one finger,
     # neighbouring links overlap by construction as it flexes.
-    cross_chain = plain.chain_of_geom[plain.vert_geom].unsqueeze(1) != plain.chain_of_geom.unsqueeze(0)
+    cross_chain = (plain.chain_of_geom[plain.vert_geom].unsqueeze(1)
+                   != plain.chain_of_geom.unsqueeze(0)).float()
 
     obj_points, _ = MeshObject(args.object_mesh_path).sample_point_and_normal(count=args.n_object_points)
     obj_points = torch.as_tensor(obj_points, dtype=torch.float32, device=device)
@@ -197,23 +250,29 @@ def measure(dataset, robot, args, device='cuda'):
     object_pen = torch.zeros(n, device=device)
     self_pen = torch.zeros(n, device=device)
 
+    # Decode the two columns we need once, up front. Slicing the Arrow table per batch
+    # costs more than the collision test itself, and at 16 floats a row the whole column
+    # is only ~30 MB even at half a million grasps.
+    cols = dataset.select_columns(['q', 'object_pose']).with_format('torch')[:]
+    all_q = cols['q'].float()
+    all_pose = cols['object_pose'].float()
+
     from tqdm import tqdm
-    for start in tqdm(range(0, n, args.batch_size), desc="Collision"):
+    for start in tqdm(range(0, n, args.batch_size), desc="Collision", unit_scale=args.batch_size,
+                      unit="grasp"):
         stop = min(start + args.batch_size, n)
-        rows = dataset[start:stop]
-        q = rows['q'].to(device).float()
-        pose = rows['object_pose'].to(device).float()
+        q = all_q[start:stop].to(device, non_blocking=True)
+        pose = all_pose[start:stop].to(device, non_blocking=True)
 
         # object channel: object surface points against the bone-bridged hand
         P = torch.einsum('bij,nj->bni', pose[:, :3, :3], obj_points) + pose[:, None, :3, 3]
-        object_pen[start:stop] = dense.depth(P, geom_poses(tree, dense, q)).amax(dim=(1, 2))
+        object_pen[start:stop] = dense.max_depth(P, geom_poses(tree, dense, q))
 
         # self channel: hand collider vertices against other chains' colliders
         gp = geom_poses(tree, plain, q)
         V = torch.einsum('bvij,vj->bvi', gp[:, plain.vert_geom, :3, :3], plain.verts) \
             + gp[:, plain.vert_geom, :3, 3]
-        d = plain.depth(V, gp)
-        self_pen[start:stop] = (d * cross_chain).amax(dim=(1, 2))
+        self_pen[start:stop] = plain.max_depth(V, gp, pair_mask=cross_chain)
 
     return object_pen.cpu().numpy(), self_pen.cpu().numpy()
 

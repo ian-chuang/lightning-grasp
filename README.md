@@ -162,8 +162,14 @@ training, shortens each episode without giving up coverage.
 - **`--n_contact`**: number of active contacts to search during grasp optimization
 - **`--batch_size_outer`** & **`--batch_size_inner`**: raise these to fill the GPU.
   Typical steps: (128, 256), (192, 256), (256, 256), (256, 512).
-- **`--batch_size`** on the filter trades memory for speed; 64 uses ~3 GB at the default
-  8192 object points.
+- **`--device`** on the filter (`-d` on the script): pick an idle GPU. The filter is
+  bandwidth-bound and sharing a GPU with a training job costs more than any other setting.
+- **`--n_object_points`** on the filter: object surface points per grasp, and the main
+  speed/resolution dial. On an idle A4500 the whole pass runs at ~5,500 grasps/s at the
+  default 8192, ~7,300 at 4096, ~9,700 at 2048; the p99 penetration depth it reports moves
+  by about 0.1 mm between 8192 and 4096, so 4096 is usually a fine trade.
+- **`--batch_size`** on the filter trades memory for speed; throughput is flat from 128
+  upward, so lower it freely if you run out of memory.
 
 ## Setup Your Model
 There are several examples in ``lygra/robot/`` folder. You can refer to ``lygra/robot/allegro.py`` for an tutorial. Basically, you simply need to setup a config object that specifies the contact field rules (i.e. which patches to use defined by allowed normals), canonical object space (i.e. where to initialize the object), and some URDF metadata. That's it!
