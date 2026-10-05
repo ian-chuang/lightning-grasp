@@ -44,6 +44,9 @@ def get_args():
     parser.add_argument('--canonical_concentration', type=float, default=1.0,
                         help='Bias placements toward the centre of the canonical space. '
                              '1.0 = uniform (unchanged); 2-3 concentrates. Beta(a, a) per axis.')
+    parser.add_argument('--canonical_box_scale', type=float, default=1.0,
+                        help='Dilate the canonical box about its centre by this factor before sampling. 1.0 = the box in the robot config (unchanged); >1 widens it, for eval sets that must cover poses the training box excluded.')
+    parser.add_argument('--seed', type=int, default=0, help='RNG seed for numpy and torch')
     parser.add_argument('--object_mesh_path', type=str, default="./assets/40mm_cube.stl", help='Path to the object mesh')
     parser.add_argument('--output_dir', type=str, default="./outputs/leap_hand_grasp_cube", help='Directory to save the dataset')
     parser.add_argument('--push_to_hub', type=str, default="iantc104/leap_hand_grasp_cube", help='Hugging Face Hub repository name to push to (e.g., "username/dataset")')
@@ -73,7 +76,9 @@ def generate_grasps(args, robot, tree, mesh_data, mesh_data_for_ik, decomposed_s
             tree=tree, 
             mesh_data=decomposed_static_mesh_data,
             sampling_args=get_object_pose_sampling_args(
-                object_pose_sampling_strategy, robot, concentration=args.canonical_concentration
+                object_pose_sampling_strategy, robot,
+                concentration=args.canonical_concentration,
+                box_scale=args.canonical_box_scale,
             )
         )
 
@@ -175,6 +180,9 @@ def main(args):
     # -----------------
     # Preparation Stage 
     # -----------------
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     robot = build_robot(args.robot)
 
     # Robot Structure.

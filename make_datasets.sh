@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 #
-# Build grasp datasets end to end: generate -> RRT expand -> collision filter -> plot.
+# Build grasp datasets end to end: generate -> RRT expand -> plot.
 #
 #   ./make_datasets.sh                          # every default object, every stage
 #   ./make_datasets.sh cube_40mm knife          # just these two
 #   ./make_datasets.sh -v v2 -c 3.0             # version v2, tighter canonical space
-#   ./make_datasets.sh --stages filter,plot     # re-filter datasets that already exist
+#   ./make_datasets.sh --stages rrt,plot        # expand datasets that already exist
 #   ./make_datasets.sh --dry-run                # print the commands, run nothing
+#
+# Eval sets are just a run with a different --version and --seed, so they never
+# collide with the training datasets on disk or on the hub. --box-scale widens the
+# canonical space about its own centre, for an eval set that has to cover object
+# poses the training box excluded:
+#
+#   ./make_datasets.sh -v eval_inbox  --seed 1 -n 20000 -e 100000 <objects>
+#   ./make_datasets.sh -v eval_wide   --seed 2 -n 20000 -e 100000 --box-scale 1.5 <objects>
 #
 # Object names are the mesh basenames in my_assets/objects/ with the `_m.stl` dropped,
 # so `knife` means `my_assets/objects/knife_m.stl`.
@@ -21,18 +29,14 @@ set -euo pipefail
 ROBOT=hsl_leap
 VERSION=v1
 CONCENTRATION=1.0          # 1.0 = uniform over the canonical box; 2-3 concentrates
+BOX_SCALE=1.0              # dilate the canonical box about its centre; 1.0 = as configured
+SEED=0                     # RNG seed; change it for an independent draw (eval sets)
 N_GRASPS=100000            # generate stage
 N_EXPANDED=500000          # RRT stage: TOTAL rows out, seed rows included
 HUB_USER=iantc104          # empty (or --no-push) to keep everything local
-STAGES=gen,rrt,filter,plot
-
-OBJECT_PENETRATION=0.008   # [m] filter: reject deeper hand-inside-object than this
-SELF_PENETRATION=0.005     # [m] filter: reject deeper hand-inside-hand than this
-CENTER_SIGMA=0             # filter: >0 also thins toward the canonical centre
-DEVICE=cuda                # e.g. cuda:1 to stay off a GPU someone else is using
+STAGES=gen,rrt,plot
 
 OBJECTS_DIR=my_assets/objects
-DENSE_URDF=my_assets/hand/hsl_leap/urdf/leap_hand_right_dense_collision.urdf
 OUT_ROOT=./outputs
 LOG_DIR=./outputs/logs
 
@@ -50,16 +54,13 @@ Options:
   -r, --robot NAME              robot in lygra/robot/__init__.py   [$ROBOT]
   -v, --version TAG             suffix on every output name        [$VERSION]
   -c, --concentration A         canonical-space concentration      [$CONCENTRATION]
+      --box-scale S             dilate the canonical box by S      [$BOX_SCALE]
+      --seed N                  RNG seed for gen and rrt           [$SEED]
   -n, --n-grasps N              rows out of the generate stage     [$N_GRASPS]
   -e, --n-expanded N            TOTAL rows out of the RRT stage    [$N_EXPANDED]
   -u, --hub-user NAME           push to NAME/<dataset>             [$HUB_USER]
       --no-push                 keep everything local
-  -s, --stages A,B,C            any of gen,rrt,filter,plot         [$STAGES]
-      --object-penetration M    filter threshold, metres           [$OBJECT_PENETRATION]
-      --self-penetration M      filter threshold, metres           [$SELF_PENETRATION]
-      --center-sigma S          filter: thin toward the centre     [$CENTER_SIGMA]
-  -d, --device DEV              GPU for the filter stage           [$DEVICE]
-      --collision-urdf PATH     bone-bridged hand for the filter
+  -s, --stages A,B,C            any of gen,rrt,plot                [$STAGES]
       --out-root DIR            where datasets are written         [$OUT_ROOT]
   -f, --force                   redo stages whose output exists
       --dry-run                 print the commands, run nothing
@@ -76,16 +77,13 @@ while [[ $# -gt 0 ]]; do
         -r|--robot)               ROBOT=$2; shift 2 ;;
         -v|--version)             VERSION=$2; shift 2 ;;
         -c|--concentration)       CONCENTRATION=$2; shift 2 ;;
+        --box-scale)              BOX_SCALE=$2; shift 2 ;;
+        --seed)                   SEED=$2; shift 2 ;;
         -n|--n-grasps)            N_GRASPS=$2; shift 2 ;;
         -e|--n-expanded)          N_EXPANDED=$2; shift 2 ;;
         -u|--hub-user)            HUB_USER=$2; shift 2 ;;
         --no-push)                HUB_USER=""; shift ;;
         -s|--stages)              STAGES=$2; shift 2 ;;
-        --object-penetration)     OBJECT_PENETRATION=$2; shift 2 ;;
-        --self-penetration)       SELF_PENETRATION=$2; shift 2 ;;
-        --center-sigma)           CENTER_SIGMA=$2; shift 2 ;;
-        -d|--device)              DEVICE=$2; shift 2 ;;
-        --collision-urdf)         DENSE_URDF=$2; shift 2 ;;
         --out-root)               OUT_ROOT=$2; LOG_DIR=$2/logs; shift 2 ;;
         -f|--force)               FORCE=1; shift ;;
         --dry-run)                DRY_RUN=1; shift ;;
@@ -101,8 +99,8 @@ has_stage() { [[ ",$STAGES," == *",$1,"* ]]; }
 
 for s in ${STAGES//,/ }; do
     case "$s" in
-        gen|rrt|filter|plot) ;;
-        *) echo "unknown stage: $s (want gen, rrt, filter or plot)" >&2; exit 2 ;;
+        gen|rrt|plot) ;;
+        *) echo "unknown stage: $s (want gen, rrt or plot)" >&2; exit 2 ;;
     esac
 done
 
@@ -115,10 +113,6 @@ for obj in "${OBJECTS[@]}"; do
         exit 2
     }
 done
-if has_stage filter && [[ ! -f "$DENSE_URDF" ]]; then
-    echo "collision URDF not found: $DENSE_URDF" >&2
-    exit 2
-fi
 
 # ---------------------------------------------------------------- plumbing
 run() {
@@ -155,9 +149,10 @@ version          $VERSION
 stages           $STAGES
 objects          ${OBJECTS[*]}
 concentration    $CONCENTRATION $([[ $CONCENTRATION == 1.0 ]] && echo '(uniform over the whole canonical box)')
+box scale        $BOX_SCALE $([[ $BOX_SCALE == 1.0 ]] && echo '(the canonical box as configured)')
+seed             $SEED
 grasps           $N_GRASPS  ->  $N_EXPANDED after RRT
 push to hub      ${HUB_USER:-<local only>}
-filter           object > ${OBJECT_PENETRATION}m, self > ${SELF_PENETRATION}m$([[ $CENTER_SIGMA != 0 ]] && echo ", center sigma $CENTER_SIGMA")
 EOF
 [[ $DRY_RUN -eq 1 ]] && echo && echo "--dry-run: nothing below is executed"
 echo
@@ -170,7 +165,6 @@ for obj in "${OBJECTS[@]}"; do
     NAME="${ROBOT}_grasp_${obj}"
     GEN="$OUT_ROOT/${NAME}_${VERSION}"
     RRT="$OUT_ROOT/${NAME}_rrt_${VERSION}"
-    FILTERED="$OUT_ROOT/${NAME}_rrt_filtered_${VERSION}"
 
     echo "=== $obj ==============================================================="
 
@@ -183,6 +177,8 @@ for obj in "${OBJECTS[@]}"; do
                     --object_mesh_path "$MESH" \
                     --n_grasps "$N_GRASPS" \
                     --canonical_concentration "$CONCENTRATION" \
+                    --canonical_box_scale "$BOX_SCALE" \
+                    --seed "$SEED" \
                     --output_dir "$GEN" \
                     --push_to_hub "$(hub "${NAME}_${VERSION}")" \
                 || { FAILED+=("$obj/gen"); continue; }
@@ -198,6 +194,8 @@ for obj in "${OBJECTS[@]}"; do
                     --object_mesh_path "$MESH" \
                     --n_grasps "$N_EXPANDED" \
                     --canonical_concentration "$CONCENTRATION" \
+                    --canonical_box_scale "$BOX_SCALE" \
+                    --seed "$SEED" \
                     --dataset_path "$GEN" \
                     --output_dir "$RRT" \
                     --push_to_hub "$(hub "${NAME}_rrt_${VERSION}")" \
@@ -205,36 +203,16 @@ for obj in "${OBJECTS[@]}"; do
         fi
     fi
 
-    if has_stage filter; then
-        echo "[filter]   $FILTERED"
-        if ! done_already "$FILTERED"; then
-            CENTER_ARGS=()
-            [[ $CENTER_SIGMA != 0 ]] && CENTER_ARGS=(--center_sigma "$CENTER_SIGMA")
-            run "${NAME}_${VERSION}_filter" \
-                uv run python filter_grasp_dataset.py \
-                    --robot "$ROBOT" \
-                    --object_mesh_path "$MESH" \
-                    --dataset_path "$RRT" \
-                    --collision_urdf "$DENSE_URDF" \
-                    --max_object_penetration "$OBJECT_PENETRATION" \
-                    --max_self_penetration "$SELF_PENETRATION" \
-                    --device "$DEVICE" \
-                    "${CENTER_ARGS[@]}" \
-                    --output_dir "$FILTERED" \
-                    --push_to_hub "$(hub "${NAME}_rrt_filtered_${VERSION}")" \
-                || { FAILED+=("$obj/filter"); continue; }
-        fi
-    fi
-
     if has_stage plot; then
         # Plot whatever the latest existing stage produced.
-        for candidate in "$FILTERED" "$RRT" "$GEN"; do
+        for candidate in "$RRT" "$GEN"; do
             [[ -d $candidate || $DRY_RUN -eq 1 ]] && { PLOT_SRC=$candidate; break; }
         done
         echo "[plot]     $PLOT_SRC"
         run "${NAME}_${VERSION}_plot" \
             uv run python plot_object_distribution.py \
                 --robot "$ROBOT" --dataset_path "$PLOT_SRC" \
+                --canonical_box_scale "$BOX_SCALE" \
                 --output "$OUT_ROOT/plots/$(basename "$PLOT_SRC").png" \
             || FAILED+=("$obj/plot")
     fi
@@ -255,4 +233,4 @@ fi
 echo "all done -- inspect with:"
 echo "  uv run python visualize_grasp.py --robot $ROBOT \\"
 echo "    --object_mesh_path $OBJECTS_DIR/${OBJECTS[0]}_m.stl \\"
-echo "    --dataset_path $OUT_ROOT/${ROBOT}_grasp_${OBJECTS[0]}_rrt_filtered_${VERSION}"
+echo "    --dataset_path $OUT_ROOT/${ROBOT}_grasp_${OBJECTS[0]}_rrt_${VERSION}"

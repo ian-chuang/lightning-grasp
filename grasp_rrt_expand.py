@@ -52,6 +52,9 @@ def get_args():
     parser.add_argument('--canonical_concentration', type=float, default=1.0,
                         help='Bias the sampled object origin toward the centre of the canonical '
                              'space. 1.0 = uniform (unchanged); 2-3 concentrates. Beta(a, a) per axis.')
+    parser.add_argument('--canonical_box_scale', type=float, default=1.0,
+                        help='Dilate the canonical box about its centre by this factor before sampling. 1.0 = the box in the robot config (unchanged); >1 widens it, for eval sets that must cover poses the training box excluded.')
+    parser.add_argument('--seed', type=int, default=0, help='RNG seed for numpy and torch')
     args = parser.parse_args()
     return args
 
@@ -80,7 +83,9 @@ def generate_grasps(
         # 1. Sample Random
         q_rand_batch = sample_random_q(robot, batch_size=args.batch_size).cuda() # (B, n_dof)
         p_rand_batch = sample_random_object_pose(
-            robot, batch_size=args.batch_size, concentration=args.canonical_concentration
+            robot, batch_size=args.batch_size,
+            concentration=args.canonical_concentration,
+            box_scale=args.canonical_box_scale,
         ).cuda() # (B, 4, 4)
 
         # 2. Find Nearest Neighbor (Batched)
@@ -189,6 +194,9 @@ def main(args):
     # -----------------
     # Preparation Stage 
     # -----------------
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     robot = build_robot(args.robot)
 
     # Robot Structure.

@@ -27,7 +27,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from lygra.robot import build_robot
+from lygra.robot import build_robot, scale_canonical_space
 from lygra.utils.dataset_utils import load_grasp_dataset
 
 AXES = ('x', 'y', 'z')
@@ -40,6 +40,8 @@ def get_args():
     p.add_argument('--robot', type=str, default='hsl_leap', help='Robot name (for the canonical box)')
     p.add_argument('--output', type=str, default=None, help='PNG to write (default: alongside the dataset)')
     p.add_argument('--max_samples', type=int, default=20000, help='Subsample this many grasps for the plots')
+    p.add_argument('--canonical_box_scale', type=float, default=1.0,
+                   help='Dilate the canonical box about its centre by this factor before sampling. 1.0 = the box in the robot config (unchanged); >1 widens it, for eval sets that must cover poses the training box excluded. Draw the box the dataset was built with.')
     p.add_argument('--seed', type=int, default=0)
     return p.parse_args()
 
@@ -60,7 +62,7 @@ def main():
     pos = poses[:, :3, 3]
     rot = poses[:, :3, :3]
 
-    box_min, box_max = build_robot(args.robot).get_canonical_space()
+    box_min, box_max = scale_canonical_space(build_robot(args.robot), args.canonical_box_scale)
 
     print(f"\nobject origin, hand base frame [m]   (canonical box in brackets)")
     for i, axis in enumerate(AXES):

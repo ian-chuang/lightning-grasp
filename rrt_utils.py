@@ -21,7 +21,7 @@ def sample_random_q(robot, batch_size=1):
     q_rand = active_lowers + rand * (active_uppers - active_lowers)
     return q_rand
 
-def sample_random_object_pose(robot, batch_size=1, concentration=1.0):
+def sample_random_object_pose(robot, batch_size=1, concentration=1.0, box_scale=1.0):
     """
     Sample random object poses (position + orientation).
     Position in canonical space.
@@ -31,10 +31,13 @@ def sample_random_object_pose(robot, batch_size=1, concentration=1.0):
     object origin lands an object-radius away, here it constrains the object origin
     directly. `concentration` biases that origin toward the box centre; 1.0 is
     uniform. See `lygra.contact_field.sample_in_box`.
+
+    `box_scale` dilates the box about its centre first -- 1.0 leaves it alone.
     """
     from lygra.contact_field import sample_in_box
+    from lygra.robot import scale_canonical_space
 
-    bmin, bmax = robot.get_canonical_space()
+    bmin, bmax = scale_canonical_space(robot, box_scale)
     positions = torch.from_numpy(
         sample_in_box(bmin, bmax, batch_size, concentration=concentration)
     ).float()
